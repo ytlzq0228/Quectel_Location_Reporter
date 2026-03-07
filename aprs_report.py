@@ -40,6 +40,7 @@ def load_config():
 
     return {
         "aprs_callsign": cfg.get("aprs_callsign", "").strip(),
+        "aprs_ssid": cfg.get("aprs_ssid", "").strip(),  # 空则用 callsign；可填数字如 1 或完整源如 BI1FQO-QU
         "aprs_passcode": cfg.get("aprs_passcode", ""),
         "aprs_host": cfg.get("aprs_host", "rotate.aprs.net"),
         "aprs_port": int_(cfg.get("aprs_port"), 14580),
@@ -116,22 +117,15 @@ def build_aprs_frame(gps_data, cfg):
     except Exception:
         alt_str = "0"
 
-    gnss_type = "GPS"
+    gnss_type = "GNSS"
     nmea_ts = _utc_time_aprs()
     message = (cfg.get("aprs_message") or "").strip()
-    tail = " APRS by RPI with GNSS %s at UTC %s" % (gnss_type, nmea_ts)
+    tail = " APRS by QuecPtyhon with %s at local time %s" % (gnss_type, nmea_ts)
     if message:
         tail += " " + message
 
-    # !ddmm.mmN/dddmm.mmE>course/speed/A=alt ...
-    body = "!%s/%s%s%s/%s/%s/A=%s" % (
-        lat_aprs,
-        lon_aprs,
-        icon,
-        course_str,
-        speed_str,
-        alt_str,
-    ) + tail
+    # !ddmm.mmN/dddmm.mmE>course/speed/A=alt ...（用拼接避免 %s 参数个数问题）
+    body = "!" + lat_aprs + "/" + lon_aprs + icon + course_str + "/" + speed_str + "/A=" + alt_str + tail
     return body.encode("utf-8")
 
 
@@ -140,18 +134,21 @@ def send_aprs(cfg, frame_body):
     连接 APRS-IS，登录后发送一帧。frame_body 为不含呼号头的帧正文 bytes。
     成功返回 True，失败返回 False。
     """
-    callsign = (cfg.get("aprs_callsign") or "").strip()
+    callsign = (cfg.get("aprs_callsign") or "").strip().upper()
     if not callsign or not frame_body:
         return False
+    # 源地址：若配置了 aprs_ssid 则用其作为源，否则用 callsign；APRS-IS 要求大写
+    ssid = (cfg.get("aprs_ssid") or "").strip().upper()
+    source = ssid if ssid else callsign
 
     host = cfg.get("aprs_host", "rotate.aprs.net")
     port = int(cfg.get("aprs_port", 14580))
-    passcode = str(cfg.get("aprs_passcode", ""))
+    passcode = str(cfg.get("aprs_passcode", "")).strip()
 
-    # 登录行: user CALLSIGN pass PASSCODE vers Software Version
-    login = "user %s pass %s vers EC800M-APRS 1.0\r\n" % (callsign, passcode)
-    # 发送行: CALLSIGN>APRS,TCPIP*:frame_body
-    packet = "%s>APRS,TCPIP*:%s\r\n" % (callsign, frame_body.decode("utf-8"))
+    # 登录用 base callsign（passcode 按呼号计算），发包用 source（可带 SSID）
+    # 行尾必须为 \r\n（字节），与 Mac nc 一致，避免设备端编码/换行差异导致 unverified
+    login_line = ("user %s pass %s vers EC800MAPRS 1.0" % (callsign, passcode)).encode("utf-8") + b"\r\n"
+    packet_line = ("%s>APRS,TCPIP*:%s" % (source, frame_body.decode("utf-8"))).encode("utf-8") + b"\r\n"
 
     try:
         addr = socket.getaddrinfo(host, port)[0][-1]
@@ -164,10 +161,17 @@ def send_aprs(cfg, frame_body):
         s = socket.socket()
         s.settimeout(15)
         s.connect(addr)
-        s.send(login.encode("utf-8"))
+        utime.sleep(1)  # 等 1 秒再发登录，与服务器就绪顺序一致，避免 unverified
+        s.send(login_line)
         utime.sleep_ms(200)
-        s.send(packet.encode("utf-8"))
-        utime.sleep_ms(100)
+        s.send(packet_line)
+        s.settimeout(2)
+        while True:
+            try:
+                if not s.recv(256):
+                    break
+            except Exception:
+                break
         return True
     except Exception as e:
         print("APRS send error:", e)
