@@ -1,4 +1,4 @@
-# Quectel EC800M 定位上报 Traccar / APRS
+# Quectel 定位上报 Traccar / APRS
 
 在移远 **QuecPython** 平台（如 EC800M）上运行的 GNSS 定位上报项目：从模组内置 GNSS 获取位置，上报到 **Traccar** 与/或 **APRS**。**只要带 GNSS 的移远 QuecPython 模组均可运行**，无需树莓派。
 
