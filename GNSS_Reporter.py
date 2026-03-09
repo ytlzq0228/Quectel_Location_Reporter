@@ -45,6 +45,11 @@ except Exception as e:
 
 import traccar_report
 
+try:
+    import oled_display
+except Exception as e:
+    print("oled_display import failed:", e)
+    oled_display = None
 
 # ------------------------- 默认配置 -------------------------
 CONFIG_PATHS = ("config.cfg", "/usr/config.cfg")
@@ -92,6 +97,7 @@ def load_config():
         "lbs_token": cfg.get("lbs_token", "").strip(),
         "lbs_timeout": max(1, min(300, int_(cfg.get("lbs_timeout"), 30))),
         "lbs_profile_idx": max(1, min(3, int_(cfg.get("lbs_profile_idx"), 1))),
+        "lbs_interval": max(10, int_(cfg.get("lbs_interval"), 60)),  # 两次 LBS 请求最小间隔（秒），按次计费时宜设大
     }
 
 
@@ -363,6 +369,12 @@ def main():
         raise SystemExit
     print("GNSS init ok")
 
+    oled_i2c = None
+    if oled_display:
+        oled_i2c = oled_display.init_oled()
+        if oled_i2c:
+            print("OLED init ok")
+
     host = cfg["traccar_host"]
     port = cfg["traccar_port"]
     moving_interval = cfg["moving_interval"]
@@ -387,6 +399,7 @@ def main():
 
     last_report_ts = 0
     last_still_report_ts = 0
+    last_lbs_ts = 0
     tick = 0
 
     try:
@@ -441,16 +454,53 @@ def main():
                             cache_push(cache_file, item)
                             print("Traccar retry later, backoff", backoff)
 
-                # 1) 优先 GNSS；无有效 lat/lon 时尝试 LBS（LBS 无速度，设为 0 走静止间隔逻辑）
+                # 1) 优先 GNSS；无有效 lat/lon 时按间隔尝试 LBS（LBS 按次计费，用 lbs_interval 限频）
                 lat = gps_data.get("lat")
                 lon = gps_data.get("lon")
+                lbs_interval = cfg.get("lbs_interval", 60)
                 if (lat is None or lon is None or gps_data.get("fix") == "0") and cfg.get("lbs_token") and cellLocator:
-                    lbs_lat, lbs_lon, lbs_acc = get_lbs_location(cfg)
-                    if lbs_lat is not None and lbs_lon is not None:
-                        gps_data["lat"], gps_data["lon"] = lbs_lat, lbs_lon
-                        gps_data["speed"] = 0
-                        gps_data["accuracy"] = lbs_acc
-                        lat, lon = lbs_lat, lbs_lon
+                    if (now - last_lbs_ts) >= lbs_interval:
+                        lbs_lat, lbs_lon, lbs_acc = get_lbs_location(cfg)
+                        last_lbs_ts = now
+                        if lbs_lat is not None and lbs_lon is not None:
+                            gps_data["lat"], gps_data["lon"] = lbs_lat, lbs_lon
+                            gps_data["speed"] = 0
+                            gps_data["accuracy"] = lbs_acc
+                            gps_data["_source"] = "LBS"
+                            lat, lon = lbs_lat, lbs_lon
+                    # 未到 lbs_interval 时不请求，沿用当前 gps_data（可能为上次 LBS 或 None）
+                if lat is not None and lon is not None and gps_data.get("_source") != "LBS":
+                    gps_data["_source"] = "GNSS"
+                # OLED 增量刷新（有则更新，无定位也刷新显示）
+                if oled_display and oled_i2c:
+                    try:
+                        if lat is not None and lon is not None:
+                            lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
+                            lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
+                        else:
+                            lat_disp = "---"
+                            lon_disp = "---"
+                        gnss_type = gps_data.get("_source") or "---"
+                        ts = last_report_ts if last_report_ts else now
+                        try:
+                            loc = utime.localtime(ts)
+                            update_time = "%02d:%02d" % (loc[3], loc[4])
+                        except Exception:
+                            update_time = "--:--"
+                        time_dif = int(now - ts) if ts else 0
+                        speed_kmh = gps_data.get("speed") or 0
+                        bat_pct = None
+                        if battery:
+                            try:
+                                bat_pct, _ = battery.get_battery()
+                            except Exception:
+                                pass
+                        oled_display.update_position(
+                            oled_i2c, lat_disp, lon_disp, gnss_type,
+                            update_time, time_dif, speed_kmh, bat_pct
+                        )
+                    except Exception as oled_err:
+                        print("oled update error:", oled_err)
                 if lat is None or lon is None:
                     utime.sleep(1)
                     continue
