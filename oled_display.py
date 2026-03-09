@@ -311,6 +311,18 @@ def update_position(i2c, lat_disp, lon_disp, gnss_type, update_time, time_dif, s
         s["prev_bat"] = bat_cap
 
 
+def clear(i2c, fill=0x00):
+    """整屏填充为黑（fill=0x00）或白（0xFF）。程序退出时调用可黑屏。"""
+    if i2c is None:
+        return
+    try:
+        _set_column_page(i2c, 0, WIDTH - 1, 0, PAGES - 1)
+        buf = bytearray([fill] * (WIDTH * PAGES))
+        _i2c_write_data(i2c, buf)
+    except Exception as e:
+        print("oled_display clear error:", e)
+
+
 def init_oled():
     """初始化 I2C 与 SSD1306，返回 i2c 对象；失败返回 None。"""
     try:

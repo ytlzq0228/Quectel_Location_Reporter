@@ -18,6 +18,7 @@ import usocket as socket
 import dataCall
 import checkNet
 from machine import Pin, WDT
+from misc import PowerKey,Power
 
 try:
     import battery
@@ -330,8 +331,26 @@ def get_utc_timestamp():
         return 0
 
 
+# PowerKey 长按退出：按下超过 1 秒后松开则请求退出（主循环检测此标志）
+_powerkey_exit_requested = False
+_powerkey_press_ts = None
+
+
+def _powerkey_callback(status):
+    """PowerKey 回调：status 0=松开，1=按下。松开时若按下时长>=1s 则请求退出。"""
+    global _powerkey_exit_requested, _powerkey_press_ts
+    if status == 1:
+        _powerkey_press_ts = utime.ticks_ms()
+    elif status == 0 and _powerkey_press_ts is not None:
+        if utime.ticks_diff(utime.ticks_ms(), _powerkey_press_ts) >= 1000:
+            _powerkey_exit_requested = True
+        _powerkey_press_ts = None
+
+
 # ------------------------- 主流程 -------------------------
 def main():
+    global _powerkey_exit_requested
+    _powerkey_exit_requested = False
     print("GNSS_Reporter starting...")
     cfg = load_config()
     print("config:", cfg)
@@ -403,6 +422,15 @@ def main():
     tick = 0
 
     try:
+        pk = PowerKey()
+        if pk.powerKeyEventRegister(_powerkey_callback) == 0:
+            print("PowerKey registered: long press >= 1s to exit.")
+        else:
+            print("PowerKey register failed.")
+    except Exception as e:
+        print("PowerKey init error:", e)
+
+    try:
         while True:
             try:
                 now = utime.time()
@@ -415,6 +443,9 @@ def main():
                     pass
             try:
                 tick += 1
+                if _powerkey_exit_requested:
+                    print("PowerKey long press, exit.")
+                    break
                 if tick % 30 == 0 and is_flash_mode(flash_pin):
                     print("Flash pin asserted, exit.")
                     break
@@ -554,7 +585,7 @@ def main():
                         payload["cell"] = cell_info.get_cell_info()
                     except Exception as e:
                         print("cell_info.get_cell_info error:", e)
-
+                print(payload)
                 r = traccar_report.send_position(host, port, device_id, payload, http_timeout)
                 if r is True:
                     print("Traccar Sent Success: %.6f %.6f" % (lat, lon))
@@ -571,6 +602,11 @@ def main():
                 print("main_loop error:", loop_err)
                 utime.sleep(2)
     finally:
+        if oled_display and oled_i2c:
+            try:
+                oled_display.clear(oled_i2c)
+            except Exception as e:
+                print("oled clear on exit:", e)
         if wdt:
             try:
                 wdt.stop()
@@ -581,6 +617,7 @@ def main():
         except Exception:
             pass
         print("GNSS_Reporter exit.")
+        Power.powerDown()
 
 
 if __name__ == "__main__":
