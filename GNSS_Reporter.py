@@ -609,7 +609,8 @@ def main():
         except Exception:
             pass
         print("GNSS_Reporter exit.")
-        Power.powerDown()
+        if _powerkey_exit_requested:
+            Power.powerDown()
 
 
 if __name__ == "__main__":
