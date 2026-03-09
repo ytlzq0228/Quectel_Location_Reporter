@@ -18,6 +18,91 @@ I2C_DATA_CHUNK = 32
 CMD_STREAM = bytearray([0x00])
 DATA_STREAM = bytearray([0x40])
 
+# 12x24 大号数字字模（速度等关键数据用），每数字 12 列 x 24 行 = 36 字节，列优先每列 3 字节 (行 0-7,8-15,16-23)
+# 7 段加粗风格，高对比度
+def _col3(b0, b1, b2):
+    return (b0, b1, b2)
+
+def _digit_12x24_data(*cols):
+    out = bytearray(36)
+    for i, (b0, b1, b2) in enumerate(cols):
+        out[i * 3] = b0
+        out[i * 3 + 1] = b1
+        out[i * 3 + 2] = b2
+    return out
+
+# 0: 外框  1: 右竖  2: 上+右上+中+左下+下  3: 上+右上+中+右下+下  4: 左上+右上+中+右下
+# 5: 上+左上+中+右下+下  6: 上+左上+中+左下+右下+下  7: 上+右上+右下  8: 全  9: 上+左上+右上+中+右下+下
+_TOP, _BOT = 0x07, 0xE0
+_MID = 0x1C
+_LT, _RT = 0xFF, 0xFF  # 左竖全、右竖全 (单字节段)
+_LT_TOP, _LT_BOT = 0xF8, 0x1F
+_RT_TOP, _RT_BOT = 0x1F, 0xF8
+FONT_12X24 = [
+    _digit_12x24_data(  # 0
+        _col3(0xFF, 0xFF, 0xFF), _col3(0xFF, 0xFF, 0xFF),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(0xFF, 0xFF, 0xFF), _col3(0xFF, 0xFF, 0xFF),
+    ),
+    _digit_12x24_data(  # 1
+        _col3(0x00, 0x00, 0x00), _col3(0x00, 0x00, 0x00), _col3(0x00, 0x00, 0x00), _col3(0x00, 0x00, 0x00),
+        _col3(0xFF, 0xFF, 0xFF), _col3(0xFF, 0xFF, 0xFF), _col3(0xFF, 0xFF, 0xFF), _col3(0xFF, 0xFF, 0xFF),
+        _col3(0x00, 0x00, 0x00), _col3(0x00, 0x00, 0x00), _col3(0x00, 0x00, 0x00), _col3(0x00, 0x00, 0x00),
+    ),
+    _digit_12x24_data(  # 2
+        _col3(_TOP, 0x00, 0xFF), _col3(_TOP, 0x00, 0xFF),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0xFF, 0x00), _col3(_TOP, 0xFF, 0x00), _col3(_TOP, 0xFF, 0xFF), _col3(_TOP, 0xFF, 0xFF),
+        _col3(_TOP, 0xFF, 0xFF), _col3(_TOP, 0xFF, 0xFF),
+    ),
+    _digit_12x24_data(  # 3
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0xFF, _BOT),
+        _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+    ),
+    _digit_12x24_data(  # 4
+        _col3(0x00, 0x00, 0xFF), _col3(0x00, 0x00, 0xFF),
+        _col3(0x00, 0x00, 0xFF), _col3(0x00, 0x00, 0xFF), _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0xFF, _BOT),
+        _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0xFF, _BOT), _col3(0x00, 0x00, 0xFF), _col3(0x00, 0x00, 0xFF),
+        _col3(0x00, 0x00, 0xFF), _col3(0x00, 0x00, 0xFF),
+    ),
+    _digit_12x24_data(  # 5
+        _col3(_TOP, 0xFF, 0xFF), _col3(_TOP, 0xFF, 0xFF),
+        _col3(_TOP, 0xFF, 0x00), _col3(_TOP, 0xFF, 0x00), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+    ),
+    _digit_12x24_data(  # 6
+        _col3(_TOP, 0xFF, 0xFF), _col3(_TOP, 0xFF, 0xFF),
+        _col3(_TOP, 0xFF, 0x00), _col3(_TOP, 0xFF, 0x00), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+    ),
+    _digit_12x24_data(  # 7
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(0x00, 0xFF, 0xFF), _col3(0x00, 0xFF, 0xFF),
+        _col3(0x00, 0xFF, 0xFF), _col3(0x00, 0xFF, 0xFF), _col3(0x00, 0x00, 0x00), _col3(0x00, 0x00, 0x00),
+        _col3(0x00, 0x00, 0x00), _col3(0x00, 0x00, 0x00),
+    ),
+    _digit_12x24_data(  # 8
+        _col3(_TOP, 0xFF, 0xFF), _col3(_TOP, 0xFF, 0xFF),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0xFF, _BOT),
+        _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+    ),
+    _digit_12x24_data(  # 9
+        _col3(_TOP, 0xFF, 0xFF), _col3(_TOP, 0xFF, 0xFF),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0xFF, _BOT), _col3(_TOP, 0xFF, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+        _col3(_TOP, 0x00, _BOT), _col3(_TOP, 0x00, _BOT),
+    ),
+]
+
+LARGE_DIGIT_W = 12
+LARGE_DIGIT_H_PAGES = 3
+
 # 5x7 点阵字模（MSB=上），补全显示所需字符
 FONT5X7 = {
     0x20: (0x00, 0x00, 0x00, 0x00, 0x00),
@@ -132,21 +217,49 @@ def _draw_string(i2c, page, col_start, s):
             break
 
 
-# 布局常量（与参考一致：标题、经纬度、速度、类型、更新时间、电量条）
+def _draw_large_digit(i2c, col_start, page_start, digit_byte):
+    """绘制一个 12x24 大号数字（0-9 的 ASCII 或单字节）。digit_byte 为 '0'~'9' 的 ord。"""
+    idx = digit_byte - 0x30
+    if idx < 0 or idx > 9:
+        idx = 0
+    font_data = FONT_12X24[idx]
+    # 字模为列优先 12*3，SSD1306 按页写需转为页优先：每页 12 字节
+    page_major = bytearray(36)
+    for p in range(LARGE_DIGIT_H_PAGES):
+        for c in range(LARGE_DIGIT_W):
+            page_major[p * LARGE_DIGIT_W + c] = font_data[c * 3 + p]
+    _set_column_page(i2c, col_start, col_start + LARGE_DIGIT_W - 1, page_start, page_start + LARGE_DIGIT_H_PAGES - 1)
+    _i2c_write_data(i2c, page_major)
+
+
+def _draw_large_number(i2c, col_start, page_start, s):
+    """绘制大号数字字符串（如 '000'），仅绘制 0-9。"""
+    col = col_start
+    for c in s:
+        if 0x30 <= ord(c) <= 0x39:
+            _draw_large_digit(i2c, col, page_start, ord(c))
+            col += LARGE_DIGIT_W
+        if col + LARGE_DIGIT_W > WIDTH:
+            break
+
+
+# 布局常量（参考之前样子：左侧小字信息，右侧大号速度；无边框更简洁）
 PAGE_TITLE = 0
 PAGE_LAT = 1
 PAGE_LON = 2
-PAGE_SPD = 3
-PAGE_TYPE = 4
-PAGE_UPD = 5
+PAGE_SPD_LARGE_START = 2   # 大号速度占用 page 2,3,4（24 行）
+PAGE_SPD_LARGE_END = 5
+PAGE_TYPE = 5
+PAGE_UPD = 6
 
-COL_TITLE = 3
+COL_TITLE = 2
 COL_LAT = 1
 COL_LON = 1
-COL_SPD_LABEL = 72
-COL_SPD_VAL = 73
+COL_SPD_LABEL = 72        # 小字 "Speed:km/h" 在右侧上方
+COL_SPD_VAL = 76          # 大号三位数起始列，12*3=36 宽，76+36=112
 COL_TYPE = 1
 COL_UPD = 1
+COL_LEFT_MAX = 71   # 左侧内容最大列，右侧 72+ 为速度标签与大号速度
 
 # 各区域列宽（字符数 * 6）
 LAT_MAX_CHARS = 11
@@ -154,6 +267,9 @@ LON_MAX_CHARS = 11
 SPD_VAL_CHARS = 3
 TYPE_MAX_CHARS = 8
 UPD_MAX_CHARS = 18
+
+# 大号速度区列/页范围（用于增量清除）
+SPD_LARGE_COL_END = COL_SPD_VAL + 3 * LARGE_DIGIT_W - 1
 
 BAT_COL_START = 106
 BAT_COL_END = 125
@@ -215,6 +331,7 @@ _state = {
     "prev_update": None,
     "prev_time_dif": None,
     "prev_bat": None,
+    "oled_error_logged": False,  # 未接/断开屏幕时仅打印一次错误，避免刷屏
 }
 
 
@@ -241,14 +358,15 @@ def _draw_border(i2c):
 
 
 def _draw_static_labels(i2c):
-    """绘制固定文字（仅首次调用）。"""
+    """绘制固定文字（仅首次调用）：左侧标题，右侧 Speed 标签（小字）。"""
     _draw_string(i2c, PAGE_TITLE, COL_TITLE, "GPS APRS Inf")
-    _draw_string(i2c, PAGE_SPD, COL_SPD_LABEL, "Speed:km/H")
+    _draw_string(i2c, PAGE_TITLE, COL_SPD_LABEL, "Speed:km/h")
 
 
 def update_position(i2c, lat_disp, lon_disp, gnss_type, update_time, time_dif, speed_kmh, bat_pct=None):
     """
     增量更新 OLED：仅重绘发生变化的区域。
+    未接或断开屏幕时（i2c 为 None 或 I2C 写入失败）会静默返回，不抛异常。
     lat_disp, lon_disp: 经纬度显示字符串（可截断以适配宽度）
     gnss_type: "GNSS" / "LBS" 等
     update_time: 更新时间字符串，如 "12:34"
@@ -256,59 +374,67 @@ def update_position(i2c, lat_disp, lon_disp, gnss_type, update_time, time_dif, s
     speed_kmh: 速度 km/h，会格式化为 3 位整数显示
     bat_pct: 电量 0~100，None 则不更新电量条
     """
+    if i2c is None:
+        return
     s = _state
     speed_str = "%03.0f" % (float(speed_kmh) * 1.0)
     bat_cap = round((bat_pct or 0) / 6.25) if bat_pct is not None else 0
     bat_cap = max(0, min(BAT_SEGMENTS, bat_cap))
 
-    if not s["init_done"]:
-        _draw_border(i2c)
-        _draw_static_labels(i2c)
-        s["init_done"] = True
-        s["prev_lat"] = ""
-        s["prev_lon"] = ""
-        s["prev_speed"] = ""
-        s["prev_type"] = ""
-        s["prev_update"] = ""
-        s["prev_time_dif"] = ""
-        s["prev_bat"] = -1
+    try:
+        if not s["init_done"]:
+            _draw_static_labels(i2c)
+            s["init_done"] = True
+            s["prev_lat"] = ""
+            s["prev_lon"] = ""
+            s["prev_speed"] = ""
+            s["prev_type"] = ""
+            s["prev_update"] = ""
+            s["prev_time_dif"] = ""
+            s["prev_bat"] = -1
 
-    # 经纬度：截断到一屏能显示的字符数
-    lat_disp = (lat_disp or "---")[:LAT_MAX_CHARS]
-    lon_disp = (lon_disp or "---")[:LON_MAX_CHARS]
-    gnss_type = (gnss_type or "---")[:TYPE_MAX_CHARS]
-    upd_str = (update_time or "") + "-" + (str(time_dif) if time_dif is not None else "")
+        # 经纬度：截断到一屏能显示的字符数
+        lat_disp = (lat_disp or "---")[:LAT_MAX_CHARS]
+        lon_disp = (lon_disp or "---")[:LON_MAX_CHARS]
+        gnss_type = (gnss_type or "---")[:TYPE_MAX_CHARS]
+        upd_str = (update_time or "") + "-" + (str(time_dif) if time_dif is not None else "")
 
-    # 仅更新变化的区域
-    if lat_disp != s["prev_lat"]:
-        _clear_rect(i2c, COL_LAT, COL_LAT + LAT_MAX_CHARS * CHAR_W - 1, PAGE_LAT, PAGE_LAT)
-        _draw_string(i2c, PAGE_LAT, COL_LAT, lat_disp)
-        s["prev_lat"] = lat_disp
+        # 仅更新变化的区域
+        if lat_disp != s["prev_lat"]:
+            _clear_rect(i2c, COL_LAT, COL_LAT + LAT_MAX_CHARS * CHAR_W - 1, PAGE_LAT, PAGE_LAT)
+            _draw_string(i2c, PAGE_LAT, COL_LAT, lat_disp)
+            s["prev_lat"] = lat_disp
 
-    if lon_disp != s["prev_lon"]:
-        _clear_rect(i2c, COL_LON, COL_LON + LON_MAX_CHARS * CHAR_W - 1, PAGE_LON, PAGE_LON)
-        _draw_string(i2c, PAGE_LON, COL_LON, lon_disp)
-        s["prev_lon"] = lon_disp
+        if lon_disp != s["prev_lon"]:
+            _clear_rect(i2c, COL_LON, COL_LON + LON_MAX_CHARS * CHAR_W - 1, PAGE_LON, PAGE_LON)
+            _draw_string(i2c, PAGE_LON, COL_LON, lon_disp)
+            s["prev_lon"] = lon_disp
 
-    if speed_str != s["prev_speed"]:
-        _clear_rect(i2c, COL_SPD_VAL, COL_SPD_VAL + 3 * CHAR_W - 1, PAGE_SPD, PAGE_SPD + 1)
-        _draw_string(i2c, PAGE_SPD, COL_SPD_VAL, speed_str)
-        s["prev_speed"] = speed_str
+        if speed_str != s["prev_speed"]:
+            _clear_rect(i2c, COL_SPD_VAL, SPD_LARGE_COL_END, PAGE_SPD_LARGE_START, PAGE_SPD_LARGE_END - 1)
+            _draw_large_number(i2c, COL_SPD_VAL, PAGE_SPD_LARGE_START, speed_str)
+            s["prev_speed"] = speed_str
 
-    if gnss_type != s["prev_type"]:
-        _clear_rect(i2c, COL_TYPE, COL_TYPE + (5 + TYPE_MAX_CHARS) * CHAR_W - 1, PAGE_TYPE, PAGE_TYPE)
-        _draw_string(i2c, PAGE_TYPE, COL_TYPE, "Type:" + gnss_type)
-        s["prev_type"] = gnss_type
+        if gnss_type != s["prev_type"]:
+            _clear_rect(i2c, COL_TYPE, COL_LEFT_MAX, PAGE_TYPE, PAGE_TYPE)
+            _draw_string(i2c, PAGE_TYPE, COL_TYPE, ("Type:" + gnss_type)[:11])
+            s["prev_type"] = gnss_type
 
-    if upd_str != (s["prev_update"] + "-" + s["prev_time_dif"]):
-        _clear_rect(i2c, COL_UPD, COL_UPD + UPD_MAX_CHARS * CHAR_W - 1, PAGE_UPD, PAGE_UPD)
-        _draw_string(i2c, PAGE_UPD, COL_UPD, ("Upd:" + upd_str)[:UPD_MAX_CHARS])
-        s["prev_update"] = update_time or ""
-        s["prev_time_dif"] = str(time_dif) if time_dif is not None else ""
+        if upd_str != (s["prev_update"] + "-" + s["prev_time_dif"]):
+            _clear_rect(i2c, COL_UPD, COL_LEFT_MAX, PAGE_UPD, PAGE_UPD)
+            _draw_string(i2c, PAGE_UPD, COL_UPD, ("Upd:" + upd_str)[:11])
+            s["prev_update"] = update_time or ""
+            s["prev_time_dif"] = str(time_dif) if time_dif is not None else ""
 
-    if bat_pct is not None and bat_cap != s["prev_bat"]:
-        _draw_battery_region(i2c, bat_cap)
-        s["prev_bat"] = bat_cap
+        if bat_pct is not None and bat_cap != s["prev_bat"]:
+            _draw_battery_region(i2c, bat_cap)
+            s["prev_bat"] = bat_cap
+
+        s["oled_error_logged"] = False
+    except (OSError, Exception) as e:
+        if not s.get("oled_error_logged"):
+            print("oled_display: I2C error (screen not connected?):", e)
+            s["oled_error_logged"] = True
 
 
 def clear(i2c, fill=0x00):

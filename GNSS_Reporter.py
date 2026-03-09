@@ -536,36 +536,33 @@ def main():
                     # 未到 lbs_interval 时不请求，沿用当前 gps_data（可能为上次 LBS 或 None）
                 if lat is not None and lon is not None and gps_data.get("_source") != "LBS":
                     gps_data["_source"] = "GNSS"
-                # OLED 增量刷新（有则更新，无定位也刷新显示）
-                if oled_display and oled_i2c:
+                # OLED 增量刷新（有则更新，无定位也刷新显示；未接屏或断开时 oled_display 内部静默处理）
+                if oled_display:
+                    if lat is not None and lon is not None:
+                        lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
+                        lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
+                    else:
+                        lat_disp = "---"
+                        lon_disp = "---"
+                    gnss_type = gps_data.get("_source") or "---"
+                    ts = last_report_ts if last_report_ts else now
                     try:
-                        if lat is not None and lon is not None:
-                            lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
-                            lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
-                        else:
-                            lat_disp = "---"
-                            lon_disp = "---"
-                        gnss_type = gps_data.get("_source") or "---"
-                        ts = last_report_ts if last_report_ts else now
+                        loc = utime.localtime(ts)
+                        update_time = "%02d:%02d" % (loc[3], loc[4])
+                    except Exception:
+                        update_time = "--:--"
+                    time_dif = int(now - ts) if ts else 0
+                    speed_kmh = gps_data.get("speed") or 0
+                    bat_pct = None
+                    if battery:
                         try:
-                            loc = utime.localtime(ts)
-                            update_time = "%02d:%02d" % (loc[3], loc[4])
+                            bat_pct, _ = battery.get_battery()
                         except Exception:
-                            update_time = "--:--"
-                        time_dif = int(now - ts) if ts else 0
-                        speed_kmh = gps_data.get("speed") or 0
-                        bat_pct = None
-                        if battery:
-                            try:
-                                bat_pct, _ = battery.get_battery()
-                            except Exception:
-                                pass
-                        oled_display.update_position(
-                            oled_i2c, lat_disp, lon_disp, gnss_type,
-                            update_time, time_dif, speed_kmh, bat_pct
-                        )
-                    except Exception as oled_err:
-                        print("oled update error:", oled_err)
+                            pass
+                    oled_display.update_position(
+                        oled_i2c, lat_disp, lon_disp, gnss_type,
+                        update_time, time_dif, speed_kmh, bat_pct
+                    )
                 if lat is None or lon is None:
                     utime.sleep(1)
                     continue
@@ -600,11 +597,8 @@ def main():
                 print("main_loop error:", loop_err)
                 utime.sleep(2)
     finally:
-        if oled_display and oled_i2c:
-            try:
-                oled_display.clear(oled_i2c)
-            except Exception as e:
-                print("oled clear on exit:", e)
+        if oled_display:
+            oled_display.clear(oled_i2c)
         if wdt:
             try:
                 wdt.stop()
