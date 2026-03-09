@@ -39,3 +39,14 @@ max_backoff=60
 
 # 看门狗超时（秒），超时未喂狗则重启；0 表示不启用
 wdt_period=60
+
+# LBS 基站定位参数（lbs_test.py 使用；仅部分模组支持 cellLocator）
+lbs_token=5Fv*********vs
+lbs_server=www.queclocator.com
+lbs_port=80
+lbs_profile_idx=1
+lbs_timeout=30
+# 超时 1~300 秒，不填默认 30
+# lbs_timeout=30
+# PDP 上下文 1~3，不填用当前拨号
+# lbs_profile_idx=1

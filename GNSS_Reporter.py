@@ -1,9 +1,8 @@
 # GNSS_Reporter.py - 移远 EC800M QuecPython 定位上报主循环与逻辑
 #
-# 功能：从内置 GNSS 获取位置，按运动/静止策略上报到 Traccar，按间隔上报 APRS；
-#       配置从 config.cfg 读取，设备 ID 使用 IMEI；
-#       弱网时使用持久化文件缓存；刷机控制引脚未悬空时退出。
-# APRS 能力在 aprs_report.py，Traccar 能力在 traccar_report.py。
+# 功能：优先 GNSS 定位；无 GNSS 时用 LBS 基站定位；按运动/静止策略上报 Traccar，按间隔上报 APRS；
+#       配置从 config.cfg 读取，设备 ID 使用 IMEI；弱网时持久化缓存；刷机引脚未悬空时退出。
+#       LBS 定位时按静止间隔上报。APRS 在 aprs_report.py，Traccar 在 traccar_report.py。
 
 import sys
 if "/usr" not in sys.path:
@@ -31,6 +30,12 @@ try:
 except Exception as e:
     print("cell_info import failed:", e)
     cell_info = None
+
+try:
+    import cellLocator
+except Exception as e:
+    print("cellLocator import failed:", e)
+    cellLocator = None
 
 try:
     import aprs_report
@@ -82,6 +87,11 @@ def load_config():
         "http_timeout": int_(cfg.get("http_timeout"), 10),
         "max_backoff": int_(cfg.get("max_backoff"), 60),
         "wdt_period": int_(cfg.get("wdt_period"), 60),
+        "lbs_server": cfg.get("lbs_server", "").strip(),
+        "lbs_port": int_(cfg.get("lbs_port"), 80),
+        "lbs_token": cfg.get("lbs_token", "").strip(),
+        "lbs_timeout": max(1, min(300, int_(cfg.get("lbs_timeout"), 30))),
+        "lbs_profile_idx": max(1, min(3, int_(cfg.get("lbs_profile_idx"), 1))),
     }
 
 
@@ -231,6 +241,7 @@ gps_data = {
     "sats": 0,
     "hdop": None,
     "fix": "0",
+    "accuracy": None,  # GNSS: 由 HDOP 推算(eph)；LBS: 接口返回米
 }
 
 
@@ -257,6 +268,10 @@ def gnss_read_once():
                 gps_data["sats"] = int(sats) if sats else 0
                 gps_data["hdop"] = hdop
                 try:
+                    gps_data["accuracy"] = float(hdop) * 2.5 if hdop else None
+                except Exception:
+                    gps_data["accuracy"] = None
+                try:
                     gps_data["alt"] = float(alt) if alt else None
                 except Exception:
                     gps_data["alt"] = None
@@ -275,6 +290,29 @@ def gnss_read_once():
                         gps_data["track"] = float(course) if course else None
                     except Exception:
                         gps_data["track"] = None
+
+
+# ------------------------- LBS 基站定位（GNSS 无数据时备用）-------------------------
+def get_lbs_location(cfg):
+    """调用 cellLocator.getLocation，成功返回 (lat, lon, accuracy)，失败返回 (None, None, None)。"""
+    if not cellLocator:
+        return None, None, None
+    server = cfg.get("lbs_server", "").strip()
+    token = cfg.get("lbs_token", "").strip()
+    if not server or not token or len(token) != 16:
+        return None, None, None
+    port = int(cfg.get("lbs_port", 80))
+    timeout = int(cfg.get("lbs_timeout", 30))
+    profile_idx = int(cfg.get("lbs_profile_idx", 1))
+    try:
+        result = cellLocator.getLocation(server, port, token, timeout, profile_idx)
+    except Exception:
+        return None, None, None
+    if isinstance(result, tuple) and len(result) >= 3:
+        lon, lat, accuracy = result[0], result[1], result[2]
+        if (lon, lat, accuracy) != (0.0, 0.0, 0):
+            return float(lat), float(lon), int(accuracy)
+    return None, None, None
 
 
 # ------------------------- 时间 -------------------------
@@ -369,7 +407,7 @@ def main():
                     break
 
                 gnss_read_once()
-                print(gps_data)
+                #print(gps_data)
 
                 # APRS：有位置且间隔到时则上报（能力在 aprs_report.py）
                 if aprs_report and aprs_cfg.get("aprs_callsign"):
@@ -403,17 +441,25 @@ def main():
                             cache_push(cache_file, item)
                             print("Traccar retry later, backoff", backoff)
 
+                # 1) 优先 GNSS；无有效 lat/lon 时尝试 LBS（LBS 无速度，设为 0 走静止间隔逻辑）
+                lat = gps_data.get("lat")
+                lon = gps_data.get("lon")
+                if (lat is None or lon is None or gps_data.get("fix") == "0") and cfg.get("lbs_token") and cellLocator:
+                    lbs_lat, lbs_lon, lbs_acc = get_lbs_location(cfg)
+                    if lbs_lat is not None and lbs_lon is not None:
+                        gps_data["lat"], gps_data["lon"] = lbs_lat, lbs_lon
+                        gps_data["speed"] = 0
+                        gps_data["accuracy"] = lbs_acc
+                        lat, lon = lbs_lat, lbs_lon
+                if lat is None or lon is None:
+                    utime.sleep(1)
+                    continue
+
+                # 2) 间隔：速度≤阈值按静止间隔，否则按运动间隔
                 if now - last_report_ts < moving_interval:
                     utime.sleep(1)
                     continue
                 last_report_ts = now
-
-                lat = gps_data.get("lat")
-                lon = gps_data.get("lon")
-                if lat is None or lon is None or gps_data.get("fix") == "0":
-                    utime.sleep(1)
-                    continue
-
                 speed_kmh = gps_data.get("speed") or 0
                 if speed_kmh <= still_speed_threshold and (now - last_still_report_ts) < still_interval:
                     utime.sleep(1)
@@ -439,6 +485,9 @@ def main():
                 sats = gps_data.get("sats")
                 if sats is not None:
                     payload["sat"] = sats
+                acc = gps_data.get("accuracy")
+                if acc is not None:
+                    payload["accuracy"] = "%.1f" % float(acc)
                 if battery:
                     level, voltage = battery.get_battery()
                     if level is not None:
