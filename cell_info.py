@@ -51,7 +51,7 @@ def get_cell_info():
 
 
 def main():
-    s = get_cell_info_json()
+    s = get_cell_info()
     print(s)
     return s
 

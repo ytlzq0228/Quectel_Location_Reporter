@@ -47,58 +47,46 @@ except Exception as e:
 import traccar_report
 
 try:
+    import config
+except Exception as e:
+    print("config import failed:", e)
+    config = None
+
+try:
     import oled_display
 except Exception as e:
     print("oled_display import failed:", e)
     oled_display = None
 
-# ------------------------- 默认配置 -------------------------
-CONFIG_PATHS = ("config.cfg", "/usr/config.cfg")
+# ------------------------- 默认常量 -------------------------
 CID = 1
 PROFILE = 0
+FLASH_CHECK_INTERVAL_TICKS = 30
+RETRY_BACKOFF_BASE_SEC = 5
 
 
-# ------------------------- 配置读取 -------------------------
 def load_config():
-    cfg = {}
-    for path in CONFIG_PATHS:
-        try:
-            with open(path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        cfg[k.strip()] = v.strip()
-            break
-        except Exception:
-            pass
-
-    def int_(v, d):
-        try:
-            return int(v)
-        except Exception:
-            return d
-
+    """从 config 模块读取完整配置；若 config 不可用则返回默认 dict。"""
+    if config:
+        return config.load_config()
     return {
-        "traccar_host": cfg.get("traccar_host", "traccar.example.com"),
-        "traccar_port": int_(cfg.get("traccar_port"), 5055),
-        "moving_interval": int_(cfg.get("moving_interval"), 10),
-        "still_interval": int_(cfg.get("still_interval"), 300),
-        "still_speed_threshold": int_(cfg.get("still_speed_threshold"), 5),
-        "cache_file": cfg.get("cache_file", "/usr/traccar_cache.txt"),
-        "flash_gpio": int_(cfg.get("flash_gpio"), -1),
-        "network_timeout": int_(cfg.get("network_timeout"), 60),
-        "http_timeout": int_(cfg.get("http_timeout"), 10),
-        "max_backoff": int_(cfg.get("max_backoff"), 60),
-        "wdt_period": int_(cfg.get("wdt_period"), 60),
-        "lbs_server": cfg.get("lbs_server", "").strip(),
-        "lbs_port": int_(cfg.get("lbs_port"), 80),
-        "lbs_token": cfg.get("lbs_token", "").strip(),
-        "lbs_timeout": max(1, min(300, int_(cfg.get("lbs_timeout"), 30))),
-        "lbs_profile_idx": max(1, min(3, int_(cfg.get("lbs_profile_idx"), 1))),
-        "lbs_interval": max(10, int_(cfg.get("lbs_interval"), 60)),  # 两次 LBS 请求最小间隔（秒），按次计费时宜设大
+        "traccar_host": "traccar.example.com",
+        "traccar_port": 5055,
+        "moving_interval": 10,
+        "still_interval": 300,
+        "still_speed_threshold": 5,
+        "cache_file": "/usr/traccar_cache.txt",
+        "flash_gpio": -1,
+        "network_timeout": 60,
+        "http_timeout": 10,
+        "max_backoff": 60,
+        "wdt_period": 60,
+        "lbs_server": "",
+        "lbs_port": 80,
+        "lbs_token": "",
+        "lbs_timeout": 30,
+        "lbs_profile_idx": 1,
+        "lbs_interval": 60,
     }
 
 
@@ -331,6 +319,52 @@ def get_utc_timestamp():
         return 0
 
 
+# ------------------------- Traccar 载荷构造 -------------------------
+def build_traccar_payload(device_id, lat, lon, gps_data):
+    """根据 gps_data 构造 Traccar 单条位置 payload（id/lat/lon/timestamp 及可选 speed/bearing/altitude 等）。"""
+    payload = {
+        "id": device_id,
+        "lat": "%.7f" % lat,
+        "lon": "%.7f" % lon,
+        "timestamp": get_utc_timestamp(),
+    }
+    speed = gps_data.get("speed")
+    if speed is not None:
+        payload["speed"] = "%.2f" % (float(speed) / 1.852)
+    track = gps_data.get("track")
+    if track is not None:
+        payload["bearing"] = "%.1f" % float(track)
+    alt = gps_data.get("alt")
+    if alt is not None:
+        payload["altitude"] = "%.1f" % float(alt)
+    sats = gps_data.get("sats")
+    if sats is not None:
+        payload["sat"] = sats
+    acc = gps_data.get("accuracy")
+    if acc is not None:
+        payload["accuracy"] = "%.1f" % float(acc)
+    if battery:
+        try:
+            level, voltage = battery.get_battery()
+            if level is not None:
+                payload["batteryLevel"] = "%.1f" % level
+            if voltage is not None:
+                payload["batteryVoltage"] = voltage
+        except Exception:
+            pass
+    if net:
+        try:
+            payload["rssi"] = net.csqQueryPoll()
+        except Exception as e:
+            print("net.csqQueryPoll error:", e)
+    if cell_info:
+        try:
+            payload["cell"] = cell_info.get_cell_info()
+        except Exception as e:
+            print("cell_info.get_cell_info error:", e)
+    return payload
+
+
 # PowerKey 长按退出：按下超过 1 秒后松开则请求退出（主循环检测此标志）
 _powerkey_exit_requested = False
 _powerkey_press_ts = None
@@ -446,7 +480,7 @@ def main():
                 if _powerkey_exit_requested:
                     print("PowerKey long press, exit.")
                     break
-                if tick % 30 == 0 and is_flash_mode(flash_pin):
+                if tick % FLASH_CHECK_INTERVAL_TICKS == 0 and is_flash_mode(flash_pin):
                     print("Flash pin asserted, exit.")
                     break
 
@@ -472,14 +506,14 @@ def main():
                         payload = item.get("payload", {})
                         attempts = item.get("attempts", 0)
                         r = traccar_report.send_position(host, port, device_id, payload, http_timeout)
-                        if r is True:
+                        if r == traccar_report.SEND_OK:
                             print("Traccar Sent Cache Success: %s %s" % (
                                 "%.6f" % float(payload.get("lat", 0)),
                                 "%.6f" % float(payload.get("lon", 0)),
                             ))
-                        elif r == "retry":
+                        elif r == traccar_report.SEND_RETRY:
                             attempts += 1
-                            backoff = min(max_backoff, attempts * 5)
+                            backoff = min(max_backoff, attempts * RETRY_BACKOFF_BASE_SEC)
                             item["attempts"] = attempts
                             item["next_ts"] = now + backoff
                             cache_push(cache_file, item)
@@ -548,52 +582,16 @@ def main():
                 last_still_report_ts = now
 
                 # 构造 Traccar 载荷并上报（发送能力在 traccar_report.py）
-                payload = {
-                    "id": device_id,
-                    "lat": "%.7f" % lat,
-                    "lon": "%.7f" % lon,
-                    "timestamp": get_utc_timestamp(),
-                }
-                speed = gps_data.get("speed")
-                if speed is not None:
-                    payload["speed"] = "%.2f" % (float(speed) / 1.852)
-                track = gps_data.get("track")
-                if track is not None:
-                    payload["bearing"] = "%.1f" % float(track)
-                alt = gps_data.get("alt")
-                if alt is not None:
-                    payload["altitude"] = "%.1f" % float(alt)
-                sats = gps_data.get("sats")
-                if sats is not None:
-                    payload["sat"] = sats
-                acc = gps_data.get("accuracy")
-                if acc is not None:
-                    payload["accuracy"] = "%.1f" % float(acc)
-                if battery:
-                    level, voltage = battery.get_battery()
-                    if level is not None:
-                        payload["batteryLevel"] = "%.1f" % level
-                    if voltage is not None:
-                        payload["batteryVoltage"] = voltage
-                if net:
-                    try:
-                        payload["rssi"] = net.csqQueryPoll()
-                    except Exception as e:
-                        print("net.csqQueryPoll error:", e)
-                if cell_info:
-                    try:
-                        payload["cell"] = cell_info.get_cell_info()
-                    except Exception as e:
-                        print("cell_info.get_cell_info error:", e)
+                payload = build_traccar_payload(device_id, lat, lon, gps_data)
                 print(payload)
                 r = traccar_report.send_position(host, port, device_id, payload, http_timeout)
-                if r is True:
+                if r == traccar_report.SEND_OK:
                     print("Traccar Sent Success: %.6f %.6f" % (lat, lon))
                 else:
                     item = {"payload": payload, "attempts": 0, "next_ts": 0}
-                    if r == "retry":
+                    if r == traccar_report.SEND_RETRY:
                         item["attempts"] = 1
-                        item["next_ts"] = now + 5
+                        item["next_ts"] = now + RETRY_BACKOFF_BASE_SEC
                     cache_push(cache_file, item)
                     print("Traccar Cached: %.6f %.6f" % (lat, lon))
 

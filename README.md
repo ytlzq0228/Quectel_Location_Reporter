@@ -84,12 +84,14 @@
    - `moving_interval`、`still_interval`、`still_speed_threshold`、`cache_file`、`flash_gpio`、`wdt_period` 等（见下方配置说明）。
 
 2. **把以下文件拷入模组**（如通过 QPYcom 文件管理）：
-   - `config.cfg`
-   - `GNSS_Traccar.py`（主程序）
+   - 将仓库中的 `config.cfg.example` 复制为 `config.cfg` 并按需修改（勿提交含真实 token 的 `config.cfg`）
+   - `config.py`（统一配置读取）
+   - `GNSS_Reporter.py`（主程序逻辑）
+   - `main.py`（入口，可选：也可直接运行 `GNSS_Reporter.py`）
    - 若使用 APRS：`aprs_report.py`
    - 若使用电池/基站信息：`battery.py`、`cell_info.py`（可选）
 
-3. 在 REPL 或开机自启中运行 **`GNSS_Traccar.py`** 即可。
+3. 在 REPL 或开机自启中运行 **`main.py`** 或 **`GNSS_Reporter.py`** 即可。
 
 ---
 
@@ -108,19 +110,19 @@
 
 ```
 .
-├── config.cfg         # 配置文件（Traccar/APRS、上报间隔、缓存、GPIO 等）
-├── GNSS_Traccar.py    # 主程序入口（GNSS + Traccar + APRS + 缓存 + 刷机检测）
+├── config.cfg.example # 配置示例（复制为 config.cfg 后修改，勿提交真实配置）
+├── config.py           # 统一配置读取（Traccar/APRS/LBS）
+├── main.py             # 启动入口
+├── GNSS_Reporter.py    # 主程序逻辑（GNSS + Traccar + APRS + 缓存 + 刷机检测）
+├── traccar_report.py   # Traccar 上报模块
 ├── aprs_report.py     # APRS 上报模块（可选）
-├── battery.py         # 电池/电源信息（可选）
+├── battery.py          # 电池/电源信息（可选）
 ├── cell_info.py       # 基站信息（可选）
-├── main.py            # 启动入口（如需要）
-├── GNSS_Reporter.py   # 其他上报/测试相关
-├── test_aprs_report.py
-├── ssd1306_i2c_test.py
+├── oled_display.py    # OLED 显示（可选）
 └── README.md
 ```
 
-**运行核心**：`config.cfg` + `GNSS_Traccar.py`，其余为可选或测试脚本。
+**运行核心**：`config.cfg` + `config.py` + `GNSS_Reporter.py`（或通过 `main.py` 启动），其余为可选模块。
 
 ---
 
@@ -161,7 +163,7 @@
 
 ## 说明与注意事项
 
-- 早期在树莓派/PC 上的示例与测试脚本可参考前作博客；当前功能以根目录 `GNSS_Traccar.py` 与 `config.cfg` 为准。
+- 早期在树莓派/PC 上的示例与测试脚本可参考前作博客；当前功能以根目录 `GNSS_Reporter.py`（及 `main.py`）与 `config.cfg` 为准。
 - EC800M 内置 GNSS 存在已知问题（如长时间运行偶发异常），可参考移远社区与上述 CSDN 博客中的排坑说明。
 
 **仓库地址**：[https://github.com/ytlzq0228/QuectelEC800_Traccar_Report](https://github.com/ytlzq0228/QuectelEC800_Traccar_Report)

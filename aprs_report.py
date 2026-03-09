@@ -2,51 +2,41 @@
 #
 # 通过 APRS-IS TCP 上报位置，帧格式与用户指定一致；
 # 最小上报间隔 30 秒由调用方/配置保证。
-
+import sys
+if "/usr" not in sys.path:
+    sys.path.insert(0, "/usr")
 import utime
 import usocket as socket
 
-# 配置路径与 GNSS_Traccar 一致
-CONFIG_PATHS = ("config.cfg", "/usr/config.cfg")
-
-APRS_MIN_INTERVAL = 30
+try:
+    import config as shared_config
+except Exception:
+    shared_config = None
 
 
 def load_config():
-    """从 cfg 读取 APRS 相关参数；aprs_interval 若小于 30 则按 30 使用。"""
-    cfg = {}
-    for path in CONFIG_PATHS:
-        try:
-            with open(path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        cfg[k.strip()] = v.strip()
-            break
-        except Exception:
-            pass
-
-    def int_(v, d):
-        try:
-            return int(v)
-        except Exception:
-            return d
-
-    raw_interval = int_(cfg.get("aprs_interval"), 60)
-    aprs_interval = max(APRS_MIN_INTERVAL, raw_interval)
-
+    """从统一 config 读取 APRS 相关参数；aprs_interval 若小于 30 则按 30 使用。"""
+    if shared_config:
+        full = shared_config.load_config()
+        return {
+            "aprs_callsign": full.get("aprs_callsign", ""),
+            "aprs_ssid": full.get("aprs_ssid", ""),
+            "aprs_passcode": full.get("aprs_passcode", ""),
+            "aprs_host": full.get("aprs_host", "rotate.aprs.net"),
+            "aprs_port": full.get("aprs_port", 14580),
+            "aprs_interval": full.get("aprs_interval", 60),
+            "aprs_message": full.get("aprs_message", ""),
+            "aprs_icon": (full.get("aprs_icon", ">") or ">")[:1],
+        }
     return {
-        "aprs_callsign": cfg.get("aprs_callsign", "").strip(),
-        "aprs_ssid": cfg.get("aprs_ssid", "").strip(),  # 空则用 callsign；可填数字如 1 或完整源如 BI1FQO-QU
-        "aprs_passcode": cfg.get("aprs_passcode", ""),
-        "aprs_host": cfg.get("aprs_host", "rotate.aprs.net"),
-        "aprs_port": int_(cfg.get("aprs_port"), 14580),
-        "aprs_interval": aprs_interval,
-        "aprs_message": cfg.get("aprs_message", "").strip(),
-        "aprs_icon": (cfg.get("aprs_icon", ">") or ">")[:1],
+        "aprs_callsign": "",
+        "aprs_ssid": "",
+        "aprs_passcode": "",
+        "aprs_host": "rotate.aprs.net",
+        "aprs_port": 14580,
+        "aprs_interval": 60,
+        "aprs_message": "",
+        "aprs_icon": ">",
     }
 
 
@@ -70,11 +60,10 @@ def _deg_to_aprs_lon(deg):
     return s + ("E" if deg >= 0 else "W")
 
 
-def _utc_time_aprs():
-    """返回 UTC 时间字符串 HHMMSS（用于帧内说明）。"""
+def _time_aprs():
+    """返回本地时间字符串 HHMMSS（用于帧内说明）。当前 RTC 为本地时间，非 UTC。"""
     try:
         t = utime.localtime()
-        # 若 RTC 为本地时间，此处简化为直接格式；若有 UTC 接口可改为 UTC
         return "%02d%02d%02d" % (t[3], t[4], t[5])
     except Exception:
         return "000000"
@@ -118,7 +107,7 @@ def build_aprs_frame(gps_data, cfg):
         alt_str = "0"
 
     gnss_type = "GNSS"
-    nmea_ts = _utc_time_aprs()
+    nmea_ts = _time_aprs()
     message = (cfg.get("aprs_message") or "").strip()
     tail = " APRS by QuecPtyhon with %s at local time %s" % (gnss_type, nmea_ts)
     if message:

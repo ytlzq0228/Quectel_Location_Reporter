@@ -11,6 +11,8 @@ except Exception:
     VBAT_ADC_CH = None
 
 VBAT_RATIO = 4
+# ADC 读数补偿（mV），用于校准分压/零点误差
+VBAT_CALIBRATION_MV = 20
 
 VBAT_SOC_TABLE = (
     (4.20, 100),
@@ -91,7 +93,7 @@ def get_battery():
             if adc_mv is None:
                 return (None, None)
             vbat_mv = adc_mv * VBAT_RATIO
-            vbat_v = (vbat_mv+20) / 1000.0
+            vbat_v = (vbat_mv + VBAT_CALIBRATION_MV) / 1000.0
             soc = voltage_to_soc(vbat_v)
             return (round(soc, 2), round(vbat_v, 2))
         finally:

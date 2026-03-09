@@ -7,10 +7,12 @@ import utime
 import usocket as socket
 
 RETRYABLE_HTTP = (408, 429, 500, 502, 503, 504)
+SEND_OK = True
+SEND_RETRY = "retry"
 
 
 def send_position(host, port, device_id, payload, timeout_s=10):
-    """用 GET 请求上报一条位置。成功返回 True，可重试错误返回 'retry'，其它失败返回 False。"""
+    """用 GET 请求上报一条位置。成功返回 SEND_OK，可重试错误返回 SEND_RETRY，其它失败返回 False。"""
     try:
         addr = socket.getaddrinfo(host, port)[0][-1]
     except Exception as e:
@@ -68,18 +70,18 @@ def send_position(host, port, device_id, payload, timeout_s=10):
                 resp = _do_send()
             except Exception as e2:
                 print("send_position error (retry):", e2)
-                return "retry"
+                return SEND_RETRY
         else:
             print("send_position error:", e)
-            return "retry"
+            return SEND_RETRY
     except Exception as e:
         print("send_position error:", e)
-        return "retry"
+        return SEND_RETRY
 
     if resp is not None:
         head = resp[:12].decode("utf-8", "ignore")
         if "200" in head or "204" in head:
-            return True
+            return SEND_OK
         if any(str(c) in head for c in RETRYABLE_HTTP):
-            return "retry"
+            return SEND_RETRY
     return False
