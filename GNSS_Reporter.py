@@ -1,7 +1,8 @@
 # GNSS_Reporter.py - 移远 EC800M QuecPython 定位上报主循环与逻辑
 #
-# 功能：优先 GNSS 定位；无 GNSS 时用 LBS 基站定位；按运动/静止策略上报 Traccar，按间隔上报 APRS；
-#       配置从 config.cfg 读取，设备 ID 使用 IMEI；弱网时持久化缓存；刷机引脚未悬空时退出。
+# 功能：优先 GNSS 定位；无 GNSS 时用 LBS 基站定位；按运动/静止策略打点并入队 Traccar/APRS。
+#       Traccar、APRS 采用生产-消费异步上报（Queue + 文件持久化），主循环只负责按间隔记录点位，不阻塞网络。
+#       配置从 config.cfg 读取，设备 ID 使用 IMEI；刷机引脚未悬空时退出。
 #       LBS 定位时按静止间隔上报。APRS 在 aprs_report.py，Traccar 在 traccar_report.py。
 
 import sys
@@ -11,7 +12,6 @@ if "/usr" not in sys.path:
 import utime
 import uos
 import net
-import ujson
 import modem
 import quecgnss
 import usocket as socket
@@ -44,7 +44,11 @@ except Exception as e:
     print("aprs_report import failed:", e)
     aprs_report = None
 
-import traccar_report
+try:
+    import traccar_report
+except Exception as e:
+    print("traccar_report import failed:", e)
+    traccar_report = None
 
 try:
     import config
@@ -71,7 +75,6 @@ except Exception as e:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
-RETRY_BACKOFF_BASE_SEC = 5
 
 
 def load_config():
@@ -84,11 +87,8 @@ def load_config():
         "moving_interval": 10,
         "still_interval": 300,
         "still_speed_threshold": 5,
-        "cache_file": "/usr/traccar_cache.txt",
         "flash_gpio": -1,
         "network_timeout": 60,
-        "http_timeout": 10,
-        "max_backoff": 60,
         "wdt_period": 60,
         "lbs_server": "",
         "lbs_port": 80,
@@ -127,65 +127,6 @@ def get_device_id():
     except Exception as e:
         print("getDevImei error:", e)
     return "EC800M"
-
-
-# ------------------------- 持久化缓存 -------------------------
-def _cache_exists(cache_path):
-    try:
-        uos.stat(cache_path)
-        return True
-    except Exception:
-        return False
-
-
-def ensure_cache_file(cache_path):
-    if _cache_exists(cache_path):
-        return
-    try:
-        with open(cache_path, "w") as f:
-            pass
-    except Exception as e:
-        print("ensure_cache_file error:", e)
-
-
-def cache_push(cache_path, item):
-    try:
-        with open(cache_path, "a") as f:
-            f.write(ujson.dumps(item) + "\n")
-    except Exception as e:
-        print("cache_push error:", e)
-
-
-def cache_pop(cache_path):
-    if not _cache_exists(cache_path):
-        return None
-    try:
-        with open(cache_path, "r") as f:
-            lines = f.readlines()
-        if not lines:
-            return None
-        first = lines[0].strip()
-        rest = lines[1:]
-        with open(cache_path, "w") as f:
-            f.write("".join(rest))
-        return ujson.loads(first)
-    except Exception as e:
-        print("cache_pop error:", e)
-    return None
-
-
-def cache_peek_next_ts(cache_path):
-    if not _cache_exists(cache_path):
-        return 0
-    try:
-        with open(cache_path, "r") as f:
-            line = f.readline()
-        if not line:
-            return 0
-        item = ujson.loads(line.strip())
-        return float(item.get("next_ts", 0))
-    except Exception:
-        return 0
 
 
 # ------------------------- GNSS 解析 -------------------------
@@ -451,19 +392,18 @@ def main():
     print("GNSS init ok")
     oled_status("GNSS init ok")
 
-    host = cfg["traccar_host"]
-    port = cfg["traccar_port"]
     moving_interval = cfg["moving_interval"]
     still_interval = cfg["still_interval"]
     still_speed_threshold = cfg["still_speed_threshold"]
-    cache_file = cfg["cache_file"]
-    http_timeout = cfg["http_timeout"]
-    max_backoff = cfg["max_backoff"]
 
-    ensure_cache_file(cache_file)
+    traccar_cfg = traccar_report.load_config() if traccar_report else {}
+    if traccar_report and (traccar_cfg.get("traccar_host") or "").strip():
+        traccar_report.start_consumer(traccar_cfg, device_id)
 
     aprs_cfg = aprs_report.load_config() if aprs_report else {}
     last_aprs_ts = 0
+    if aprs_report and aprs_cfg.get("aprs_callsign"):
+        aprs_report.start_consumer(aprs_cfg)
 
     wdt = None
     if cfg["wdt_period"] > 0:
@@ -514,27 +454,6 @@ def main():
                     oled_status("Flash mode exit")
                     break
 
-                # 消费 Traccar 缓存（能力在 traccar_report.py）
-                next_ts = cache_peek_next_ts(cache_file)
-                if next_ts <= now:
-                    item = cache_pop(cache_file)
-                    if item:
-                        payload = item.get("payload", {})
-                        attempts = item.get("attempts", 0)
-                        r = traccar_report.send_position(host, port, device_id, payload, http_timeout)
-                        if r == traccar_report.SEND_OK:
-                            print("Traccar Sent Cache Success: %s %s" % (
-                                "%.6f" % float(payload.get("lat", 0)),
-                                "%.6f" % float(payload.get("lon", 0)),
-                            ))
-                        elif r == traccar_report.SEND_RETRY:
-                            attempts += 1
-                            backoff = min(max_backoff, attempts * RETRY_BACKOFF_BASE_SEC)
-                            item["attempts"] = attempts
-                            item["next_ts"] = now + backoff
-                            cache_push(cache_file, item)
-                            print("Traccar retry later, backoff", backoff)
-
                 # 1) 优先 GNSS；无有效 lat/lon 时按间隔尝试 LBS（LBS 按次计费，用 lbs_interval 限频）
                 gnss_read_once()
                 #print(gps_data)
@@ -584,15 +503,12 @@ def main():
                     utime.sleep(1)
                     continue
 
-                # APRS：有位置且间隔到时则上报（能力在 aprs_report.py）
+                # APRS：有位置且间隔到时则入队（异步上报在 aprs_report.py）
                 if aprs_report and aprs_cfg.get("aprs_callsign"):
                     aprs_interval = aprs_cfg.get("aprs_interval", 60)
                     if (now - last_aprs_ts) >= aprs_interval:
-                        frame_body = aprs_report.build_aprs_frame(gps_data, aprs_cfg)
-                        if frame_body and aprs_report.send_aprs(aprs_cfg, frame_body):
-                            last_aprs_ts = now
-                            print("APRS Sent: %.6f %.6f" % (lat, lon))
-
+                        aprs_report.enqueue(gps_data)
+                        last_aprs_ts = now
 
                 # 2) 间隔：速度≤阈值按静止间隔，否则按运动间隔
                 if now - last_report_ts < moving_interval:
@@ -605,19 +521,11 @@ def main():
                     continue
                 last_still_report_ts = now
 
-                # 构造 Traccar 载荷并上报（发送能力在 traccar_report.py）
+                # 打点：构造 Traccar 载荷并入队（异步发送在 traccar_report.py）
                 payload = build_traccar_payload(device_id, lat, lon, gps_data)
-                print(payload)
-                r = traccar_report.send_position(host, port, device_id, payload, http_timeout)
-                if r == traccar_report.SEND_OK:
-                    print("Traccar Sent Success: %.6f %.6f" % (lat, lon))
-                else:
-                    item = {"payload": payload, "attempts": 0, "next_ts": 0}
-                    if r == traccar_report.SEND_RETRY:
-                        item["attempts"] = 1
-                        item["next_ts"] = now + RETRY_BACKOFF_BASE_SEC
-                    cache_push(cache_file, item)
-                    print("Traccar Cached: %.6f %.6f" % (lat, lon))
+                #print(payload)
+                if traccar_report:
+                    traccar_report.enqueue(payload)
 
                 utime.sleep(1)
             except Exception as loop_err:

@@ -25,9 +25,6 @@ aprs_port=14580
 # 最小间隔30秒
 aprs_interval=60
 
-# 持久化缓存文件路径（弱网时未发送的位置会写入此文件）
-cache_file=/usr/traccar_cache.txt
-
 # 刷机控制 GPIO 编号。该引脚未悬空（如接 GND）时程序退出，便于进入刷机模式。请查阅 EC800M 硬件手册确认可用 GPIO
 flash_gpio=-1
 

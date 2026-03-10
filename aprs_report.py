@@ -1,17 +1,32 @@
-# aprs_report.py - APRS 位置上报（参数从 config.cfg 读取）
+# aprs_report.py - APRS 位置上报（生产-消费异步 + 持久化）
 #
-# 通过 APRS-IS TCP 上报位置，帧格式与用户指定一致；
-# 最小上报间隔 30 秒由调用方/配置保证。
+# 主程序只调用 enqueue(gps_data) 打点；本模块内维护 Queue + 文件缓存，消费者线程异步上报。
 import sys
 if "/usr" not in sys.path:
     sys.path.insert(0, "/usr")
 import utime
+import ujson
 import usocket as socket
+import _thread
 
 try:
     import config as shared_config
 except Exception:
     shared_config = None
+
+try:
+    from queue import Queue
+except Exception:
+    Queue = None
+
+APRS_RETRY_BACKOFF_BASE_SEC = 5
+APRS_MAX_BACKOFF = 60
+
+# 模块内状态：由 start_consumer 初始化
+_aprs_aprs_queue = None
+_aprs_aprs_file_lock = None
+_aprs_cfg = None
+_aprs_cache_file = None
 
 
 def load_config():
@@ -171,3 +186,205 @@ def send_aprs(cfg, frame_body):
                 s.close()
             except Exception:
                 pass
+
+
+# ------------------------- 持久化缓存（内部，需持锁调用）-------------------------
+def _cache_exists(path):
+    try:
+        import uos
+        uos.stat(path)
+        return True
+    except Exception:
+        return False
+
+
+def _cache_ensure(path):
+    if _cache_exists(path):
+        return
+    try:
+        with open(path, "w") as f:
+            pass
+    except Exception as e:
+        print("aprs_cache ensure error:", e)
+
+
+def _cache_push_locked(path, item):
+    try:
+        with open(path, "a") as f:
+            f.write(ujson.dumps(item) + "\n")
+    except Exception as e:
+        print("aprs_cache push error:", e)
+
+
+def _cache_pop_locked(path):
+    if not _cache_exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            lines = f.readlines()
+        if not lines:
+            return None
+        first = lines[0].strip()
+        rest = lines[1:]
+        with open(path, "w") as f:
+            f.write("".join(rest))
+        return ujson.loads(first)
+    except Exception as e:
+        print("aprs_cache pop error:", e)
+    return None
+
+
+def _cache_peek_next_ts_locked(path):
+    if not _cache_exists(path):
+        return 0
+    try:
+        with open(path, "r") as f:
+            line = f.readline()
+        if not line:
+            return 0
+        item = ujson.loads(line.strip())
+        return float(item.get("next_ts", 0))
+    except Exception:
+        return 0
+
+
+def _consumer_loop():
+    """消费者线程：从队列或文件取项，构造帧并发送；失败则写回文件带退避。"""
+    global _aprs_queue, _aprs_file_lock, _aprs_cfg, _aprs_cache_file
+    if _aprs_queue is None or _aprs_file_lock is None or _aprs_cfg is None or _aprs_cache_file is None:
+        return
+    now = utime.time
+    while True:
+        item = None
+        from_aprs_queue = False
+        if not _aprs_queue.empty():
+            try:
+                item = _aprs_queue.get()
+                from_aprs_queue = True
+            except Exception:
+                pass
+        if item is None:
+            _aprs_file_lock.acquire()
+            try:
+                next_ts = _cache_peek_next_ts_locked(_aprs_cache_file)
+                if next_ts <= now():
+                    item = _cache_pop_locked(_aprs_cache_file)
+            except Exception:
+                pass
+            try:
+                _aprs_file_lock.release()
+            except Exception:
+                pass
+        if item is None:
+            utime.sleep(1)
+            continue
+
+        gps_data = item.get("gps_data") or {}
+        if gps_data.get("lat") is None or gps_data.get("lon") is None:
+            utime.sleep(0)
+            continue
+        frame_body = build_aprs_frame(gps_data, _aprs_cfg)
+        if not frame_body:
+            utime.sleep(0)
+            continue
+        ok = send_aprs(_aprs_cfg, frame_body)
+        if ok:
+            if from_aprs_queue:
+                _aprs_file_lock.acquire()
+                try:
+                    _cache_pop_locked(_aprs_cache_file)
+                except Exception:
+                    pass
+                try:
+                    _aprs_file_lock.release()
+                except Exception:
+                    pass
+            lat, lon = gps_data.get("lat"), gps_data.get("lon")
+            print("APRS Sent: %.6f %.6f" % (float(lat), float(lon)))
+        else:
+            attempts = item.get("attempts", 0) + 1
+            backoff = min(APRS_MAX_BACKOFF, attempts * APRS_RETRY_BACKOFF_BASE_SEC)
+            item["attempts"] = attempts
+            item["next_ts"] = now() + backoff
+            _aprs_file_lock.acquire()
+            try:
+                _cache_push_locked(_aprs_cache_file, item)
+            finally:
+                try:
+                    _aprs_file_lock.release()
+                except Exception:
+                    pass
+            print("APRS retry later, backoff", backoff)
+        utime.sleep(0)
+
+
+def start_consumer(cfg):
+    """
+    启动 APRS 消费者线程。传入 load_config() 的返回值；之后主程序只调用 enqueue(gps_data)。
+    """
+    global _aprs_queue, _aprs_file_lock, _aprs_cfg, _aprs_cache_file
+    if Queue is None:
+        print("aprs_report: Queue not available, enqueue will no-op")
+        return
+    if not (cfg.get("aprs_callsign") or "").strip():
+        return
+    _aprs_cfg = cfg
+    _aprs_cache_file = "/usr/aprs_cache.txt"
+    _aprs_file_lock = _thread.allocate_lock()
+    _aprs_queue = Queue(100)
+    _cache_ensure(_aprs_cache_file)
+
+    _aprs_file_lock.acquire()
+    try:
+        while _cache_exists(_aprs_cache_file):
+            next_ts = _cache_peek_next_ts_locked(_aprs_cache_file)
+            if next_ts > utime.time():
+                break
+            item = _cache_pop_locked(_aprs_cache_file)
+            if item is None:
+                break
+            try:
+                if not _aprs_queue.put(item):
+                    _cache_push_locked(_aprs_cache_file, item)
+                    break
+            except Exception:
+                _cache_push_locked(_aprs_cache_file, item)
+                break
+    except Exception as e:
+        print("aprs load cache error:", e)
+    finally:
+        try:
+            _aprs_file_lock.release()
+        except Exception:
+            pass
+
+    try:
+        _thread.start_new_thread(_consumer_loop, ())
+        print("APRS consumer thread started")
+    except Exception as e:
+        print("APRS start_consumer error:", e)
+
+
+def enqueue(gps_data):
+    """
+    生产：将一条位置入队并追加到持久化文件。主程序只负责按间隔调用此接口打点。
+    """
+    global _aprs_queue, _aprs_file_lock, _aprs_cfg, _aprs_cache_file
+    if _aprs_queue is None or _aprs_cfg is None or _aprs_cache_file is None:
+        return
+    if gps_data.get("lat") is None or gps_data.get("lon") is None:
+        return
+    item = {"gps_data": gps_data, "attempts": 0, "next_ts": 0}
+    _aprs_file_lock.acquire()
+    try:
+        _cache_push_locked(_aprs_cache_file, item)
+    finally:
+        try:
+            _aprs_file_lock.release()
+        except Exception:
+            pass
+    try:
+        _aprs_queue.put(item)
+    except Exception as e:
+        print("aprs enqueue put error:", e)
+    print("APRS Cached: %.6f %.6f" % (float(gps_data.get("lat")), float(gps_data.get("lon"))))

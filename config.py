@@ -47,14 +47,13 @@ def load_config():
         # Traccar
         "traccar_host": cfg.get("traccar_host", "traccar.example.com"),
         "traccar_port": _int_val(cfg.get("traccar_port"), 5055),
+        "traccar_http_timeout": _int_val(cfg.get("http_timeout"), 10),
+        "traccar_max_backoff": _int_val(cfg.get("max_backoff"), 60),
         "moving_interval": _int_val(cfg.get("moving_interval"), 10),
         "still_interval": _int_val(cfg.get("still_interval"), 300),
         "still_speed_threshold": _int_val(cfg.get("still_speed_threshold"), 5),
-        "cache_file": cfg.get("cache_file", "/usr/traccar_cache.txt"),
         "flash_gpio": _int_val(cfg.get("flash_gpio"), -1),
         "network_timeout": _int_val(cfg.get("network_timeout"), 60),
-        "http_timeout": _int_val(cfg.get("http_timeout"), 10),
-        "max_backoff": _int_val(cfg.get("max_backoff"), 60),
         "wdt_period": _int_val(cfg.get("wdt_period"), 60),
         # LBS
         "lbs_server": cfg.get("lbs_server", "").strip(),
