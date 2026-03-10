@@ -484,20 +484,6 @@ def main():
                     print("Flash pin asserted, exit.")
                     break
 
-                gnss_read_once()
-                #print(gps_data)
-
-                # APRS：有位置且间隔到时则上报（能力在 aprs_report.py）
-                if aprs_report and aprs_cfg.get("aprs_callsign"):
-                    lat = gps_data.get("lat")
-                    lon = gps_data.get("lon")
-                    aprs_interval = aprs_cfg.get("aprs_interval", 60)
-                    if lat is not None and lon is not None and (now - last_aprs_ts) >= aprs_interval:
-                        frame_body = aprs_report.build_aprs_frame(gps_data, aprs_cfg)
-                        if frame_body and aprs_report.send_aprs(aprs_cfg, frame_body):
-                            last_aprs_ts = now
-                            print("APRS Sent: %.6f %.6f" % (lat, lon))
-
                 # 消费 Traccar 缓存（能力在 traccar_report.py）
                 next_ts = cache_peek_next_ts(cache_file)
                 if next_ts <= now:
@@ -520,6 +506,8 @@ def main():
                             print("Traccar retry later, backoff", backoff)
 
                 # 1) 优先 GNSS；无有效 lat/lon 时按间隔尝试 LBS（LBS 按次计费，用 lbs_interval 限频）
+                gnss_read_once()
+                #print(gps_data)
                 lat = gps_data.get("lat")
                 lon = gps_data.get("lon")
                 lbs_interval = cfg.get("lbs_interval", 60)
@@ -566,6 +554,16 @@ def main():
                 if lat is None or lon is None:
                     utime.sleep(1)
                     continue
+
+                # APRS：有位置且间隔到时则上报（能力在 aprs_report.py）
+                if aprs_report and aprs_cfg.get("aprs_callsign"):
+                    aprs_interval = aprs_cfg.get("aprs_interval", 60)
+                    if (now - last_aprs_ts) >= aprs_interval:
+                        frame_body = aprs_report.build_aprs_frame(gps_data, aprs_cfg)
+                        if frame_body and aprs_report.send_aprs(aprs_cfg, frame_body):
+                            last_aprs_ts = now
+                            print("APRS Sent: %.6f %.6f" % (lat, lon))
+
 
                 # 2) 间隔：速度≤阈值按静止间隔，否则按运动间隔
                 if now - last_report_ts < moving_interval:
