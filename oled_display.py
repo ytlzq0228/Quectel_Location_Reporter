@@ -1,7 +1,7 @@
 # oled_display.py - SSD1306 128x64 I2C OLED 显示驱动
 #
-# 对外接口：init_oled, clear, show_boot_message, update_position,
-#          reset_display_compact, update_display_compact
+# 对外接口：init_oled, clear, show_boot_message, update_display（三款界面）,
+#          update_position, reset_display_compact, update_display_compact
 # 字库：小号 12px、大号 32px（font_to_py 生成），不内嵌字模。
 
 import utime
@@ -376,6 +376,7 @@ def clear(i2c, fill=0x00):
         _set_region(i2c, 0, WIDTH - 1, 0, PAGES - 1)
         _write_data(i2c, bytearray([fill] * (WIDTH * PAGES)))
         _state_boot = []
+        _state_multi["display_mode"] = -1
     except Exception as e:
         print("oled_display clear error:", e)
 
@@ -407,7 +408,141 @@ def show_boot_message(i2c, msg="Booting..."):
         print("oled_display show_boot_message error:", e)
 
 
-# 主界面状态（增量更新）
+# 三款界面共用：电池+速度区域不变，内容区为左侧 4 行（标题+3 行数据）
+# 内容区：页 0-1 标题，页 2-3/4-5/6-7 为三行数据，列 0..COL_LEFT_MAX
+PAGE_LINE0 = 0   # 标题，占页 0-1
+PAGE_LINE1 = 2   # 数据行1，占页 2-3
+PAGE_LINE2 = 4   # 数据行2，占页 4-5
+PAGE_LINE3 = 6   # 数据行3，占页 6-7
+CONTENT_COL_END = COL_LEFT_MAX
+CONTENT_MAX_CH = 18   # 每行约 18 字符内，避免与速度/电量冲突
+
+# 多界面状态（display_mode 0/1/2，电池/速度与各模式行缓存）
+_state_multi = {
+    "display_mode": -1,
+    "prev_bat": None,
+    "prev_speed": None,
+    "prev_line0": None,
+    "prev_line1": None,
+    "prev_line2": None,
+    "prev_line3": None,
+    "oled_error_logged": False,
+}
+
+
+def _draw_content_line(i2c, page, text):
+    """在指定页起画一行内容（左对齐，不超过 CONTENT_COL_END）。"""
+    s = (text or "")[:CONTENT_MAX_CH]
+    _fill_rect(i2c, COL_TITLE, CONTENT_COL_END, page, page + SMALL_H_PAGES - 1, 0x00)
+    _draw_string(i2c, page, COL_TITLE, s, font_small)
+
+
+def update_display(
+    i2c,
+    display_mode,
+    speed_kmh,
+    bat_pct=None,
+    lat_disp=None,
+    lon_disp=None,
+    gnss_type=None,
+    aprs_ago_sec=None,
+    traccar_ago_sec=None,
+    system_time_str=None,
+    accuracy_m=None,
+    heading=None,
+    sats=None,
+):
+    """
+    三款界面统一更新：电池、速度始终一致；内容区按 display_mode 显示。
+    display_mode: 0=GNSS INFO(经度/纬度/Type), 1=Report Status(APRS/Traccar/系统时间), 2=精度/航向/卫星数
+    """
+    try:
+        if i2c is None:
+            return
+        sm = _state_multi
+        speed_str = "%03d" % min(999, max(0, int(round(float(speed_kmh or 0)))))
+        bat_seg = round((bat_pct or 0) * BAT_SEGMENTS / 100) if bat_pct is not None else 0
+        bat_seg = max(0, min(BAT_SEGMENTS, bat_seg))
+
+        # 切换界面时清空内容区并重画
+        if sm["display_mode"] != display_mode:
+            sm["display_mode"] = display_mode
+            sm["prev_line0"] = None
+            sm["prev_line1"] = None
+            sm["prev_line2"] = None
+            sm["prev_line3"] = None
+            _fill_rect(i2c, 0, CONTENT_COL_END, 0, PAGES - 1, 0x00)
+
+        # 1) 电池、速度：与界面无关，有变化就更新
+        if bat_pct is not None and bat_seg != sm["prev_bat"]:
+            _draw_battery(i2c, bat_seg)
+            sm["prev_bat"] = bat_seg
+        if speed_str != sm["prev_speed"]:
+            w = _measure_number_cols(speed_str, font_large)
+            spd_start = max(CONTENT_COL_END + 1, SPD_COL_RIGHT - w + 1)
+            _fill_rect(i2c, spd_start, SPD_COL_RIGHT, PAGE_SPD_START, PAGE_SPD_END - 1, 0x00)
+            _draw_number_right(i2c, PAGE_SPD_START, SPD_COL_RIGHT, speed_str, font_large)
+            sm["prev_speed"] = speed_str
+
+        # 2) 内容区四行：按 mode 生成标题 + 三行
+        if display_mode == 0:
+            line0 = "GNSS INFO"
+            line1 = (lat_disp or "---")[:CONTENT_MAX_CH]
+            line2 = (lon_disp or "---")[:CONTENT_MAX_CH]
+            line3 = ("Type:" + (gnss_type or "---"))[:CONTENT_MAX_CH]
+        elif display_mode == 1:
+            line0 = "Report Status"
+            line1 = ("APRS: " + _format_ago(aprs_ago_sec))[:CONTENT_MAX_CH]
+            line2 = ("Traccar: " + _format_ago(traccar_ago_sec))[:CONTENT_MAX_CH]
+            line3 = (system_time_str or "--:--:--")[:CONTENT_MAX_CH]
+        else:
+            # mode 2: 精度、航向、卫星数量
+            line0 = "Acc/HDG/SAT"
+            if accuracy_m is not None:
+                try:
+                    line1 = ("Acc: %.1fm" % float(accuracy_m))[:CONTENT_MAX_CH]
+                except (TypeError, ValueError):
+                    line1 = "Acc: --"
+            else:
+                line1 = "Acc: --"
+            if heading is not None:
+                try:
+                    line2 = ("HDG: %.0f" % float(heading))[:CONTENT_MAX_CH]
+                except (TypeError, ValueError):
+                    line2 = "HDG: --"
+            else:
+                line2 = "HDG: --"
+            try:
+                line3 = ("SAT: %d" % int(sats))[:CONTENT_MAX_CH] if sats is not None else "SAT: --"
+            except (TypeError, ValueError):
+                line3 = "SAT: --"
+
+        if line0 != sm["prev_line0"]:
+            _draw_content_line(i2c, PAGE_LINE0, line0)
+            sm["prev_line0"] = line0
+        if line1 != sm["prev_line1"]:
+            _draw_content_line(i2c, PAGE_LINE1, line1)
+            sm["prev_line1"] = line1
+        if line2 != sm["prev_line2"]:
+            _draw_content_line(i2c, PAGE_LINE2, line2)
+            sm["prev_line2"] = line2
+        if line3 != sm["prev_line3"]:
+            _draw_content_line(i2c, PAGE_LINE3, line3)
+            sm["prev_line3"] = line3
+
+        sm["oled_error_logged"] = False
+    except (OSError, Exception) as e:
+        try:
+            if not _state_multi.get("oled_error_logged"):
+                print("oled_display update_display I2C error:", e)
+                _state_multi["oled_error_logged"] = True
+        except NameError:
+            pass
+    except Exception as e:
+        print("oled_display update_display error:", e)
+
+
+# 主界面状态（增量更新）- 保留给 update_position 兼容
 _state = {
     "init_done": False,
     "prev_lat": None,

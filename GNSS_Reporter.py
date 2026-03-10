@@ -315,26 +315,33 @@ def build_traccar_payload(device_id, lat, lon, gps_data):
     return payload
 
 
-# PowerKey 长按退出：按下超过 1 秒后松开则请求退出（主循环检测此标志）
+# PowerKey：长按>=3秒退出，短按切换显示界面
 _powerkey_exit_requested = False
 _powerkey_press_ts = None
+_display_mode = 0  # 0=GNSS INFO, 1=Report Status, 2=精度/航向/卫星
+LONG_PRESS_MS = 3000
+SHORT_PRESS_MIN_MS = 50  # 防抖，过短视为误触
 
 
 def _powerkey_callback(status):
-    """PowerKey 回调：status 0=松开，1=按下。松开时若按下时长>=1s 则请求退出。"""
-    global _powerkey_exit_requested, _powerkey_press_ts
+    """PowerKey 回调：status 0=松开，1=按下。长按>=3s 请求退出，短按切换显示模式。"""
+    global _powerkey_exit_requested, _powerkey_press_ts, _display_mode
     if status == 1:
         _powerkey_press_ts = utime.ticks_ms()
     elif status == 0 and _powerkey_press_ts is not None:
-        if utime.ticks_diff(utime.ticks_ms(), _powerkey_press_ts) >= 1000:
+        duration = utime.ticks_diff(utime.ticks_ms(), _powerkey_press_ts)
+        if duration >= LONG_PRESS_MS:
             _powerkey_exit_requested = True
+        elif duration >= SHORT_PRESS_MIN_MS:
+            _display_mode = (_display_mode + 1) % 3
         _powerkey_press_ts = None
 
 
 # ------------------------- 主流程 -------------------------
 def main():
-    global _powerkey_exit_requested
+    global _powerkey_exit_requested, _display_mode
     _powerkey_exit_requested = False
+    _display_mode = 0
     print("GNSS_Reporter starting...")
 
     # 第一时间初始化 OLED 并显示 Booting（无屏或异常时 oled_display 内部静默）
@@ -423,7 +430,7 @@ def main():
     try:
         pk = PowerKey()
         if pk.powerKeyEventRegister(_powerkey_callback) == 0:
-            print("PowerKey registered: long press >= 1s to exit.")
+            print("PowerKey: long press >= 3s exit, short press switch display.")
             oled_status("PowerKey Register ok")
         else:
             print("PowerKey register failed.")
@@ -473,7 +480,7 @@ def main():
                     # 未到 lbs_interval 时不请求，沿用当前 gps_data（可能为上次 LBS 或 None）
                 if lat is not None and lon is not None and gps_data.get("_source") != "LBS":
                     gps_data["_source"] = "GNSS"
-                # OLED 增量刷新（无定位也刷新；未接屏或异常时 oled_display 内部静默）
+                # OLED 三款界面统一刷新（电池、速度不变；短按电源键切换界面）
                 if lat is not None and lon is not None:
                     lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
                     lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
@@ -481,13 +488,6 @@ def main():
                     lat_disp = "---"
                     lon_disp = "---"
                 gnss_type = gps_data.get("_source") or "---"
-                ts = last_report_ts if last_report_ts else now
-                try:
-                    loc = utime.localtime(ts)
-                    update_time = "%02d:%02d" % (loc[3], loc[4])
-                except Exception:
-                    update_time = "--:--"
-                time_dif = int(now - ts) if ts else 0
                 speed_kmh = gps_data.get("speed") or 0
                 bat_pct = None
                 if battery:
@@ -495,9 +495,27 @@ def main():
                         bat_pct, _ = battery.get_battery()
                     except Exception:
                         pass
-                oled_display.update_position(
-                    oled_i2c, lat_disp, lon_disp, gnss_type,
-                    update_time, time_dif, speed_kmh, bat_pct
+                try:
+                    loc = utime.localtime(now)
+                    system_time_str = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
+                except Exception:
+                    system_time_str = "--:--:--"
+                aprs_ago_sec = (now - last_aprs_ts) if last_aprs_ts else None
+                traccar_ago_sec = (now - last_report_ts) if last_report_ts else None
+                oled_display.update_display(
+                    oled_i2c,
+                    _display_mode,
+                    speed_kmh,
+                    bat_pct=bat_pct,
+                    lat_disp=lat_disp,
+                    lon_disp=lon_disp,
+                    gnss_type=gnss_type,
+                    aprs_ago_sec=aprs_ago_sec,
+                    traccar_ago_sec=traccar_ago_sec,
+                    system_time_str=system_time_str,
+                    accuracy_m=gps_data.get("accuracy"),
+                    heading=gps_data.get("track"),
+                    sats=gps_data.get("sats"),
                 )
                 if lat is None or lon is None:
                     utime.sleep(1)
