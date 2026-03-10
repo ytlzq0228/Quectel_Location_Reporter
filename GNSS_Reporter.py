@@ -355,201 +355,215 @@ def main():
     if oled_i2c is not None:
         print("OLED init ok")
 
-    cfg = load_config()
-    print("config:", cfg)
-
-    flash_pin = create_flash_pin(cfg["flash_gpio"])
-    if is_flash_mode(flash_pin):
-        print("Flash pin asserted, exit for flash mode.")
-        oled_status("Flash mode exit")
-        raise SystemExit
-
-    device_id = get_device_id()
-    print("device_id:", device_id)
-    oled_status("IMEI:****" + str(device_id)[-6:])
-
-    print("wait network...")
-    oled_status("wait network...")
-    stagecode, subcode = checkNet.waitNetworkReady(cfg["network_timeout"])
-    if stagecode != 3:
-        print("network not ready, exit.")
-        oled_status("net not ready")
-        raise SystemExit
-    print("network ready")
-    oled_status("network ready")
-
+    wdt = None  # 供 finally 清理用，初始化阶段 raise 时尚未创建
     try:
-        dataCall.getInfo(CID, PROFILE)
-        utime.sleep(1)
-    except Exception as e:
-        print("dataCall.getInfo:", e)
-        oled_status("dataCall err")
+        cfg = load_config()
+        print("config:", cfg)
 
-    try:
-        quecgnss.configSet(0, 1)
-        quecgnss.configSet(2, 1)
-        quecgnss.configSet(4, 1)
-    except Exception as e:
-        print("quecgnss configSet:", e)
-    ret = quecgnss.init()
-    if ret != 0:
-        print("GNSS init failed, ret:", ret)
-        oled_status("GNSS init failed")
-        raise SystemExit
-    print("GNSS init ok")
-    oled_status("GNSS init ok")
+        flash_pin = create_flash_pin(cfg["flash_gpio"])
+        if is_flash_mode(flash_pin):
+            print("Flash pin asserted, exit for flash mode.")
+            oled_status("Flash mode exit")
+            raise SystemExit
 
-    moving_interval = cfg["moving_interval"]
-    still_interval = cfg["still_interval"]
-    still_speed_threshold = cfg["still_speed_threshold"]
+        device_id = get_device_id()
+        print("device_id:", device_id)
+        oled_status("IMEI:****" + str(device_id)[-6:])
 
-    traccar_cfg = traccar_report.load_config() if traccar_report else {}
-    if traccar_report and (traccar_cfg.get("traccar_host") or "").strip():
-        traccar_report.start_consumer(traccar_cfg, device_id)
+        print("wait network...")
+        oled_status("wait network...")
+        stagecode, subcode = checkNet.waitNetworkReady(cfg["network_timeout"])
+        if stagecode != 3:
+            print("network not ready, exit.")
+            oled_status("net not ready")
+            raise SystemExit
+        print("network ready")
+        oled_status("network ready")
 
-    aprs_cfg = aprs_report.load_config() if aprs_report else {}
-    last_aprs_ts = 0
-    if aprs_report and aprs_cfg.get("aprs_callsign"):
-        aprs_report.start_consumer(aprs_cfg)
-
-    wdt = None
-    if cfg["wdt_period"] > 0:
         try:
-            wdt = WDT(cfg["wdt_period"])
-            print("WDT started, period %d s" % cfg["wdt_period"])
-            oled_status("WDT %ds" % cfg["wdt_period"])
+            dataCall.getInfo(CID, PROFILE)
+            utime.sleep(1)
         except Exception as e:
-            print("WDT init failed:", e)
-            oled_status("WDT init fail")
+            print("dataCall.getInfo:", e)
+            oled_status("dataCall err")
 
-    last_report_ts = 0
-    last_still_report_ts = 0
-    last_lbs_ts = 0
-    tick = 0
+        try:
+            quecgnss.configSet(0, 1)
+            quecgnss.configSet(2, 1)
+            quecgnss.configSet(4, 1)
+        except Exception as e:
+            print("quecgnss configSet:", e)
+        ret = quecgnss.init()
+        if ret != 0:
+            print("GNSS init failed, ret:", ret)
+            oled_status("GNSS init failed")
+            raise SystemExit
+        print("GNSS init ok")
+        oled_status("GNSS init ok")
 
-    try:
-        pk = PowerKey()
-        if pk.powerKeyEventRegister(_powerkey_callback) == 0:
-            print("PowerKey: long press >= 3s exit, short press switch display.")
-            oled_status("PowerKey Register ok")
-        else:
-            print("PowerKey register failed.")
-            oled_status("PowerKey Register fail")
-    except Exception as e:
-        print("PowerKey init error:", e)
-        oled_status("PowerKey Init err")
-    oled_display.clear(oled_i2c)
-    try:
-        while True:
+        moving_interval = cfg["moving_interval"]
+        still_interval = cfg["still_interval"]
+        still_speed_threshold = cfg["still_speed_threshold"]
+
+        traccar_cfg = traccar_report.load_config() if traccar_report else {}
+        if traccar_report and (traccar_cfg.get("traccar_host") or "").strip():
+            traccar_report.start_consumer(traccar_cfg, device_id)
+
+        aprs_cfg = aprs_report.load_config() if aprs_report else {}
+        last_aprs_ts = 0
+        if aprs_report and aprs_cfg.get("aprs_callsign"):
+            aprs_report.start_consumer(aprs_cfg)
+
+        if cfg["wdt_period"] > 0:
             try:
-                now = utime.time()
-            except Exception:
-                now = 0
-            if wdt:
+                wdt = WDT(cfg["wdt_period"])
+                print("WDT started, period %d s" % cfg["wdt_period"])
+                oled_status("WDT %ds" % cfg["wdt_period"])
+            except Exception as e:
+                print("WDT init failed:", e)
+                oled_status("WDT init fail")
+
+        last_report_ts = 0
+        last_still_report_ts = 0
+        last_lbs_ts = 0
+        tick = 0
+
+        try:
+            pk = PowerKey()
+            if pk.powerKeyEventRegister(_powerkey_callback) == 0:
+                print("PowerKey: long press >= 3s exit, short press switch display.")
+                oled_status("PowerKey Register ok")
+            else:
+                print("PowerKey register failed.")
+                oled_status("PowerKey Register fail")
+        except Exception as e:
+            print("PowerKey init error:", e)
+            oled_status("PowerKey Init err")
+        oled_display.clear(oled_i2c)
+        try:
+            while True:
                 try:
-                    wdt.feed()
+                    now = utime.time()
                 except Exception:
-                    pass
-            try:
-                tick += 1
-                if _powerkey_exit_requested:
-                    print("PowerKey long press, exit.")
-                    oled_status("PowerKey exit")
-                    break
-                if tick % FLASH_CHECK_INTERVAL_TICKS == 0 and is_flash_mode(flash_pin):
-                    print("Flash pin asserted, exit.")
-                    oled_status("Flash mode exit")
-                    break
-
-                # 1) 优先 GNSS；无有效 lat/lon 时按间隔尝试 LBS（LBS 按次计费，用 lbs_interval 限频）
-                gnss_read_once()
-                #print(gps_data)
-                lat = gps_data.get("lat")
-                lon = gps_data.get("lon")
-                lbs_interval = cfg.get("lbs_interval", 60)
-                if (lat is None or lon is None or gps_data.get("fix") == "0") and cfg.get("lbs_token") and cellLocator:
-                    if (now - last_lbs_ts) >= lbs_interval:
-                        lbs_lat, lbs_lon, lbs_acc = get_lbs_location(cfg)
-                        last_lbs_ts = now
-                        if lbs_lat is not None and lbs_lon is not None:
-                            gps_data["lat"], gps_data["lon"] = lbs_lat, lbs_lon
-                            gps_data["speed"] = 0
-                            gps_data["accuracy"] = lbs_acc
-                            gps_data["_source"] = "LBS"
-                            lat, lon = lbs_lat, lbs_lon
-                    # 未到 lbs_interval 时不请求，沿用当前 gps_data（可能为上次 LBS 或 None）
-                if lat is not None and lon is not None and gps_data.get("_source") != "LBS":
-                    gps_data["_source"] = "GNSS"
-                # OLED 三款界面统一刷新（电池、速度不变；短按电源键切换界面）
-                if lat is not None and lon is not None:
-                    lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
-                    lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
-                else:
-                    lat_disp = "---"
-                    lon_disp = "---"
-                gnss_type = gps_data.get("_source") or "---"
-                speed_kmh = gps_data.get("speed") or 0
-                bat_pct = None
-                if battery:
+                    now = 0
+                if wdt:
                     try:
-                        bat_pct, _ = battery.get_battery()
+                        wdt.feed()
                     except Exception:
                         pass
                 try:
-                    loc = utime.localtime(now)
-                    system_time_str = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
+                    tick += 1
+                    if _powerkey_exit_requested:
+                        print("PowerKey long press, exit.")
+                        oled_status("PowerKey exit")
+                        break
+                    if tick % FLASH_CHECK_INTERVAL_TICKS == 0 and is_flash_mode(flash_pin):
+                        print("Flash pin asserted, exit.")
+                        oled_status("Flash mode exit")
+                        break
+
+                    # 1) 优先 GNSS；无有效 lat/lon 时按间隔尝试 LBS（LBS 按次计费，用 lbs_interval 限频）
+                    gnss_read_once()
+                    #print(gps_data)
+                    lat = gps_data.get("lat")
+                    lon = gps_data.get("lon")
+                    lbs_interval = cfg.get("lbs_interval", 60)
+                    if (lat is None or lon is None or gps_data.get("fix") == "0") and cfg.get("lbs_token") and cellLocator:
+                        if (now - last_lbs_ts) >= lbs_interval:
+                            lbs_lat, lbs_lon, lbs_acc = get_lbs_location(cfg)
+                            last_lbs_ts = now
+                            if lbs_lat is not None and lbs_lon is not None:
+                                gps_data["lat"], gps_data["lon"] = lbs_lat, lbs_lon
+                                gps_data["speed"] = 0
+                                gps_data["accuracy"] = lbs_acc
+                                gps_data["_source"] = "LBS"
+                                lat, lon = lbs_lat, lbs_lon
+                    if lat is not None and lon is not None and gps_data.get("_source") != "LBS":
+                        gps_data["_source"] = "GNSS"
+                    # OLED 三款界面统一刷新（电池、速度不变；短按电源键切换界面）
+                    if lat is not None and lon is not None:
+                        lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
+                        lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
+                    else:
+                        lat_disp = "---"
+                        lon_disp = "---"
+                    gnss_type = gps_data.get("_source") or "---"
+                    speed_kmh = gps_data.get("speed") or 0
+                    bat_pct = None
+                    if battery:
+                        try:
+                            bat_pct, _ = battery.get_battery()
+                        except Exception:
+                            pass
+                    try:
+                        loc = utime.localtime(now)
+                        system_time_str = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
+                    except Exception:
+                        system_time_str = "--:--:--"
+                    aprs_ago_sec = (now - last_aprs_ts) if last_aprs_ts else None
+                    traccar_ago_sec = (now - last_report_ts) if last_report_ts else None
+                    oled_display.update_display(
+                        oled_i2c,
+                        _display_mode,
+                        speed_kmh,
+                        bat_pct=bat_pct,
+                        lat_disp=lat_disp,
+                        lon_disp=lon_disp,
+                        gnss_type=gnss_type,
+                        aprs_ago_sec=aprs_ago_sec,
+                        traccar_ago_sec=traccar_ago_sec,
+                        system_time_str=system_time_str,
+                        accuracy_m=gps_data.get("accuracy"),
+                        heading=gps_data.get("track"),
+                        sats=gps_data.get("sats"),
+                    )
+                    if lat is None or lon is None:
+                        utime.sleep(1)
+                        continue
+
+                    # APRS：有位置且间隔到时则入队（异步上报在 aprs_report.py）
+                    if aprs_report and aprs_cfg.get("aprs_callsign"):
+                        aprs_interval = aprs_cfg.get("aprs_interval", 60)
+                        if (now - last_aprs_ts) >= aprs_interval:
+                            aprs_report.enqueue(gps_data)
+                            last_aprs_ts = now
+
+                    # 2) 间隔：速度≤阈值按静止间隔，否则按运动间隔
+                    if now - last_report_ts < moving_interval:
+                        utime.sleep(1)
+                        continue
+                    last_report_ts = now
+                    speed_kmh = gps_data.get("speed") or 0
+                    if speed_kmh <= still_speed_threshold and (now - last_still_report_ts) < still_interval:
+                        utime.sleep(1)
+                        continue
+                    last_still_report_ts = now
+
+                    # 打点：构造 Traccar 载荷并入队（异步发送在 traccar_report.py）
+                    payload = build_traccar_payload(device_id, lat, lon, gps_data)
+                    if traccar_report:
+                        traccar_report.enqueue(payload)
+
+                    utime.sleep(1)
+                except Exception as loop_err:
+                    print("main_loop error:", loop_err)
+                    oled_status("err:" + str(loop_err)[:17])
+                    utime.sleep(2)
+        finally:
+            oled_status("exit.")
+            oled_display.clear(oled_i2c)
+            if wdt:
+                try:
+                    wdt.stop()
                 except Exception:
-                    system_time_str = "--:--:--"
-                aprs_ago_sec = (now - last_aprs_ts) if last_aprs_ts else None
-                traccar_ago_sec = (now - last_report_ts) if last_report_ts else None
-                oled_display.update_display(
-                    oled_i2c,
-                    _display_mode,
-                    speed_kmh,
-                    bat_pct=bat_pct,
-                    lat_disp=lat_disp,
-                    lon_disp=lon_disp,
-                    gnss_type=gnss_type,
-                    aprs_ago_sec=aprs_ago_sec,
-                    traccar_ago_sec=traccar_ago_sec,
-                    system_time_str=system_time_str,
-                    accuracy_m=gps_data.get("accuracy"),
-                    heading=gps_data.get("track"),
-                    sats=gps_data.get("sats"),
-                )
-                if lat is None or lon is None:
-                    utime.sleep(1)
-                    continue
-
-                # APRS：有位置且间隔到时则入队（异步上报在 aprs_report.py）
-                if aprs_report and aprs_cfg.get("aprs_callsign"):
-                    aprs_interval = aprs_cfg.get("aprs_interval", 60)
-                    if (now - last_aprs_ts) >= aprs_interval:
-                        aprs_report.enqueue(gps_data)
-                        last_aprs_ts = now
-
-                # 2) 间隔：速度≤阈值按静止间隔，否则按运动间隔
-                if now - last_report_ts < moving_interval:
-                    utime.sleep(1)
-                    continue
-                last_report_ts = now
-                speed_kmh = gps_data.get("speed") or 0
-                if speed_kmh <= still_speed_threshold and (now - last_still_report_ts) < still_interval:
-                    utime.sleep(1)
-                    continue
-                last_still_report_ts = now
-
-                # 打点：构造 Traccar 载荷并入队（异步发送在 traccar_report.py）
-                payload = build_traccar_payload(device_id, lat, lon, gps_data)
-                #print(payload)
-                if traccar_report:
-                    traccar_report.enqueue(payload)
-
-                utime.sleep(1)
-            except Exception as loop_err:
-                print("main_loop error:", loop_err)
-                oled_status("err:" + str(loop_err)[:17])
-                utime.sleep(2)
+                    pass
+            try:
+                quecgnss.gnssEnable(0)
+            except Exception:
+                pass
+            print("GNSS_Reporter exit.")
+            if _powerkey_exit_requested:
+                Power.powerDown()
     finally:
         oled_status("exit.")
         oled_display.clear(oled_i2c)
