@@ -56,7 +56,16 @@ try:
     import oled_display
 except Exception as e:
     print("oled_display import failed:", e)
-    oled_display = None
+
+    class _OledStub:
+        """无 oled_display 模块时使用，仅保证调用不报错；init_oled 返回 None 表示无屏。"""
+        def init_oled(self):
+            return None
+        def __getattr__(self, _name):
+            def _noop(*args, **kwargs):
+                pass
+            return _noop
+    oled_display = _OledStub()
 
 # ------------------------- 默认常量 -------------------------
 CID = 1
@@ -386,29 +395,47 @@ def main():
     global _powerkey_exit_requested
     _powerkey_exit_requested = False
     print("GNSS_Reporter starting...")
+
+    # 第一时间初始化 OLED 并显示 Booting（无屏或异常时 oled_display 内部静默）
+    oled_i2c = oled_display.init_oled()
+    oled_display.show_boot_message(oled_i2c, "Booting...")
+
+    def oled_status(msg):
+        """将状态/报错同步到 OLED 单行（无上位机时便于看运行状态）。"""
+        oled_display.show_boot_message(oled_i2c, str(msg)[:21])
+
+    if oled_i2c is not None:
+        print("OLED init ok")
+
     cfg = load_config()
     print("config:", cfg)
 
     flash_pin = create_flash_pin(cfg["flash_gpio"])
     if is_flash_mode(flash_pin):
         print("Flash pin asserted, exit for flash mode.")
+        oled_status("Flash mode exit")
         raise SystemExit
 
     device_id = get_device_id()
     print("device_id:", device_id)
+    oled_status("IMEI:****" + str(device_id)[-6:])
 
     print("wait network...")
+    oled_status("wait network...")
     stagecode, subcode = checkNet.waitNetworkReady(cfg["network_timeout"])
     if stagecode != 3:
         print("network not ready, exit.")
+        oled_status("net not ready")
         raise SystemExit
     print("network ready")
+    oled_status("network ready")
 
     try:
         dataCall.getInfo(CID, PROFILE)
         utime.sleep(1)
     except Exception as e:
         print("dataCall.getInfo:", e)
+        oled_status("dataCall err")
 
     try:
         quecgnss.configSet(0, 1)
@@ -419,14 +446,10 @@ def main():
     ret = quecgnss.init()
     if ret != 0:
         print("GNSS init failed, ret:", ret)
+        oled_status("GNSS init failed")
         raise SystemExit
     print("GNSS init ok")
-
-    oled_i2c = None
-    if oled_display:
-        oled_i2c = oled_display.init_oled()
-        if oled_i2c:
-            print("OLED init ok")
+    oled_status("GNSS init ok")
 
     host = cfg["traccar_host"]
     port = cfg["traccar_port"]
@@ -447,8 +470,10 @@ def main():
         try:
             wdt = WDT(cfg["wdt_period"])
             print("WDT started, period %d s" % cfg["wdt_period"])
+            oled_status("WDT %ds" % cfg["wdt_period"])
         except Exception as e:
             print("WDT init failed:", e)
+            oled_status("WDT init fail")
 
     last_report_ts = 0
     last_still_report_ts = 0
@@ -459,11 +484,14 @@ def main():
         pk = PowerKey()
         if pk.powerKeyEventRegister(_powerkey_callback) == 0:
             print("PowerKey registered: long press >= 1s to exit.")
+            oled_status("PowerKey Register ok")
         else:
             print("PowerKey register failed.")
+            oled_status("PowerKey Register fail")
     except Exception as e:
         print("PowerKey init error:", e)
-
+        oled_status("PowerKey Init err")
+    oled_display.clear(oled_i2c)
     try:
         while True:
             try:
@@ -479,9 +507,11 @@ def main():
                 tick += 1
                 if _powerkey_exit_requested:
                     print("PowerKey long press, exit.")
+                    oled_status("PowerKey exit")
                     break
                 if tick % FLASH_CHECK_INTERVAL_TICKS == 0 and is_flash_mode(flash_pin):
                     print("Flash pin asserted, exit.")
+                    oled_status("Flash mode exit")
                     break
 
                 # 消费 Traccar 缓存（能力在 traccar_report.py）
@@ -524,33 +554,32 @@ def main():
                     # 未到 lbs_interval 时不请求，沿用当前 gps_data（可能为上次 LBS 或 None）
                 if lat is not None and lon is not None and gps_data.get("_source") != "LBS":
                     gps_data["_source"] = "GNSS"
-                # OLED 增量刷新（有则更新，无定位也刷新显示；未接屏或断开时 oled_display 内部静默处理）
-                if oled_display:
-                    if lat is not None and lon is not None:
-                        lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
-                        lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
-                    else:
-                        lat_disp = "---"
-                        lon_disp = "---"
-                    gnss_type = gps_data.get("_source") or "---"
-                    ts = last_report_ts if last_report_ts else now
+                # OLED 增量刷新（无定位也刷新；未接屏或异常时 oled_display 内部静默）
+                if lat is not None and lon is not None:
+                    lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
+                    lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
+                else:
+                    lat_disp = "---"
+                    lon_disp = "---"
+                gnss_type = gps_data.get("_source") or "---"
+                ts = last_report_ts if last_report_ts else now
+                try:
+                    loc = utime.localtime(ts)
+                    update_time = "%02d:%02d" % (loc[3], loc[4])
+                except Exception:
+                    update_time = "--:--"
+                time_dif = int(now - ts) if ts else 0
+                speed_kmh = gps_data.get("speed") or 0
+                bat_pct = None
+                if battery:
                     try:
-                        loc = utime.localtime(ts)
-                        update_time = "%02d:%02d" % (loc[3], loc[4])
+                        bat_pct, _ = battery.get_battery()
                     except Exception:
-                        update_time = "--:--"
-                    time_dif = int(now - ts) if ts else 0
-                    speed_kmh = gps_data.get("speed") or 0
-                    bat_pct = None
-                    if battery:
-                        try:
-                            bat_pct, _ = battery.get_battery()
-                        except Exception:
-                            pass
-                    oled_display.update_position(
-                        oled_i2c, lat_disp, lon_disp, gnss_type,
-                        update_time, time_dif, speed_kmh, bat_pct
-                    )
+                        pass
+                oled_display.update_position(
+                    oled_i2c, lat_disp, lon_disp, gnss_type,
+                    update_time, time_dif, speed_kmh, bat_pct
+                )
                 if lat is None or lon is None:
                     utime.sleep(1)
                     continue
@@ -593,10 +622,11 @@ def main():
                 utime.sleep(1)
             except Exception as loop_err:
                 print("main_loop error:", loop_err)
+                oled_status("err:" + str(loop_err)[:17])
                 utime.sleep(2)
     finally:
-        if oled_display:
-            oled_display.clear(oled_i2c)
+        oled_status("exit.")
+        oled_display.clear(oled_i2c)
         if wdt:
             try:
                 wdt.stop()

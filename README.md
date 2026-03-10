@@ -119,10 +119,27 @@
 ├── battery.py          # 电池/电源信息（可选）
 ├── cell_info.py       # 基站信息（可选）
 ├── oled_display.py    # OLED 显示（可选）
+├── tools/
+│   └── ttf_to_oled_font.py  # PC 端：TTF 转 5x7 字模（可选）
 └── README.md
 ```
 
 **运行核心**：`config.cfg` + `config.py` + `GNSS_Reporter.py`（或通过 `main.py` 启动），其余为可选模块。
+
+### OLED 使用外部字体
+
+OLED 小字（5×7 点阵）默认使用内置字模；若显示效果不理想，可改用**外部字体文件**：
+
+1. **在 PC 上生成字模**（需安装 Pillow：`pip install Pillow`）：
+   ```bash
+   python3 tools/ttf_to_oled_font.py /path/to/your/font.ttf -o font_small.py
+   ```
+   也可输出二进制：`-o font_small.bin --bin`。
+
+2. **将生成的文件放到设备**：把 `font_small.py`（或 `font_small.bin`）拷到模组 `/usr/Fonts/` 或与 `oled_display.py` 同目录。  
+   `oled_display` 会在上述路径按顺序查找并加载，与内置字模合并（外部同码点会覆盖内置）。支持任意宽高（如 5×9、8×16），字库中可含 `WIDTH`/`HEIGHT`。
+
+更多方案（含 MicroPython 下用 TTF 高质量绘制的常见做法）见 [docs/OLED_FONTS.md](docs/OLED_FONTS.md)。
 
 ---
 
