@@ -1,2 +1,32 @@
 config.cfg
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# VSCode
+.vscode/
+
+# 编译/构建输出
+build/
+dist/
+*.egg-info/
+
+# 虚拟环境
+venv/
+.env/
+.venv/
+
+# 日志
+*.log
+
+# 临时文件
+*.swp
+*.tmp
+*.db*
