@@ -272,9 +272,7 @@ def enqueue(payload):
         return
     item = {"payload": payload, "attempts": 0, "next_ts": 0}
     try:
-        print(utime.ticks_ms())
         _traccar_queue.put(item)
-        print(utime.ticks_ms())
     except Exception as e:
         print("traccar enqueue put error:", e)
     lat = payload.get("lat")

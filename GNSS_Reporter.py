@@ -244,7 +244,9 @@ def gnss_read_once():
 
 # ------------------------- LBS 基站定位（GNSS 无数据时备用）-------------------------
 def get_lbs_location(cfg):
-    """调用 cellLocator.getLocation，成功返回 (lat, lon, accuracy)，失败返回 (None, None, None)。"""
+    """调用 cellLocator.getLocation，成功返回 (lat, lon, accuracy)，失败返回 (None, None, None)。
+    若存在 _traccar_extra_lock 则持锁再调 LBS，与 cache 线程的 cell_info 刷新串行，避免底层冲突。全他妈的是坑"""
+    global _traccar_extra_lock
     if not cellLocator:
         return None, None, None
     server = cfg.get("lbs_server", "").strip()
@@ -254,10 +256,19 @@ def get_lbs_location(cfg):
     port = int(cfg.get("lbs_port", 80))
     timeout = int(cfg.get("lbs_timeout", 30))
     profile_idx = int(cfg.get("lbs_profile_idx", 1))
+    lock = _traccar_extra_lock
+    if lock is not None:
+        lock.acquire()
     try:
         result = cellLocator.getLocation(server, port, token, timeout, profile_idx)
     except Exception:
         return None, None, None
+    finally:
+        if lock is not None:
+            try:
+                lock.release()
+            except Exception:
+                pass
     if isinstance(result, tuple) and len(result) >= 3:
         lon, lat, accuracy = result[0], result[1], result[2]
         if (lon, lat, accuracy) != (0.0, 0.0, 0):
@@ -275,14 +286,16 @@ def get_utc_timestamp():
 
 
 # ------------------------- Traccar 载荷构造 -------------------------
-# rssi/cell/battery 低变化但耗时长，由独立线程写入全局缓存，build 只读缓存，保证 GPS 打点路径不阻塞
-TRACCAR_EXTRA_CACHE_INTERVAL_SEC = 5
+# rssi/cell 低变化但耗时长，由独立线程写入全局缓存。与 LBS 共用底层 cell 接口，用锁串行化避免冲突。
+TRACCAR_EXTRA_CACHE_INTERVAL_SEC = 10
 _traccar_extra_cache = {}
+_traccar_extra_lock = None  # 在 start_traccar_extra_cache_thread 中创建，LBS 与 cache 刷新共用此锁
 
 
 def _traccar_extra_cache_loop():
-    """后台线程：定期拉取 rssi/cell/battery 写入全局 _traccar_extra_cache，不阻塞主循环。"""
-    global _traccar_extra_cache
+    """后台线程：定期拉取 rssi/cell 写入全局 _traccar_extra_cache。刷新时持锁，与 LBS 串行。"""
+    #这里有个坑，为了高密度打点，运营商信息不要作为阻塞调用，net和cell属于低频刷新信息，但是获取时间耗时，会影响主线程的正常运行
+    global _traccar_extra_cache, _traccar_extra_lock
 
     def _do_refresh():
         out = {}
@@ -298,17 +311,38 @@ def _traccar_extra_cache_loop():
                 pass
         return out
 
-    _traccar_extra_cache = _do_refresh()  # 启动时先刷一次，首轮打点即有缓存
+    lock = _traccar_extra_lock
+    # 非阻塞拿锁：拿不到就跳过本轮，避免阻塞 LBS；LBS 侧始终阻塞拿锁
+    def _try_refresh():
+        global _traccar_extra_cache
+        if lock is None:
+            _traccar_extra_cache = _do_refresh()
+            return
+        try:
+            if not lock.acquire(0):
+                return
+        except TypeError:
+            lock.acquire()
+        try:
+            _traccar_extra_cache = _do_refresh()
+        finally:
+            try:
+                lock.release()
+            except Exception:
+                pass
+    _try_refresh()
     while True:
         utime.sleep(TRACCAR_EXTRA_CACHE_INTERVAL_SEC)
-        _traccar_extra_cache = _do_refresh()
+        _try_refresh()
 
 
 def start_traccar_extra_cache_thread():
-    """启动 rssi/cell/battery 缓存刷新线程（低变化慢接口，独立线程更新，主路径只读缓存）。"""
+    """启动 rssi/cell 缓存刷新线程；同时创建与 LBS 共用的锁，避免底层 cell 接口冲突。"""
+    global _traccar_extra_lock
     if _thread is None:
         return
     try:
+        _traccar_extra_lock = _thread.allocate_lock()
         _thread.start_new_thread(_traccar_extra_cache_loop, ())
         print("Traccar extra cache thread started")
     except Exception as e:
@@ -504,16 +538,17 @@ def main():
                         oled_status("Flash mode exit")
                         break
 
-                    # 1) 优先 GNSS；无有效 lat/lon 时按间隔尝试 LBS（LBS 按次计费，用 lbs_interval 限频）
+                    # 1) 优先 GNSS；无 GNSS 时尽快 LBS 一次，之后按 lbs_interval 刷新，直到 GNSS 恢复
                     gnss_read_once()
                     t_gnss = utime.ticks_ms()
-                    #print(gps_data)
                     lat = gps_data.get("lat")
                     lon = gps_data.get("lon")
                     lbs_interval = cfg.get("lbs_interval", 60)
                     t_lbs = t_gnss
-                    if (lat is None or lon is None or gps_data.get("fix") == "0") and cfg.get("lbs_token") and cellLocator:
-                        if (now - last_lbs_ts) >= lbs_interval:
+                    no_gnss = lat is None or lon is None or gps_data.get("fix") == "0"
+                    if no_gnss and cfg.get("lbs_token") and cellLocator:
+                        # 首次（last_lbs_ts==0）或间隔已到：立即试 LBS。启动时 utime.time() 可能很小，仅靠 now>=lbs_interval 会一直不成立
+                        if last_lbs_ts == 0 or (now - last_lbs_ts) >= lbs_interval:
                             lbs_lat, lbs_lon, lbs_acc = get_lbs_location(cfg)
                             last_lbs_ts = now
                             if lbs_lat is not None and lbs_lon is not None:
