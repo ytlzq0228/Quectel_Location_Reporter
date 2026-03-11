@@ -19,7 +19,7 @@ try:
 except Exception:
     Queue = None
 
-RETRYABLE_HTTP = (408, 429, 500, 502, 503, 504)
+RETRYABLE_HTTP = (400, 408, 429, 500, 502, 503, 504)
 SEND_OK = True
 SEND_RETRY = "retry"
 RETRY_BACKOFF_BASE_SEC = 5
