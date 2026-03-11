@@ -521,7 +521,6 @@ def main():
                     now = utime.time()
                 except Exception:
                     now = 0
-                t0 = utime.ticks_ms()  # 本轮耗时打点起点
                 if wdt:
                     try:
                         wdt.feed()
@@ -540,11 +539,9 @@ def main():
 
                     # 1) 优先 GNSS；无 GNSS 时尽快 LBS 一次，之后按 lbs_interval 刷新，直到 GNSS 恢复
                     gnss_read_once()
-                    t_gnss = utime.ticks_ms()
                     lat = gps_data.get("lat")
                     lon = gps_data.get("lon")
                     lbs_interval = cfg.get("lbs_interval", 60)
-                    t_lbs = t_gnss
                     no_gnss = lat is None or lon is None or gps_data.get("fix") == "0"
                     if no_gnss and cfg.get("lbs_token") and cellLocator:
                         # 首次（last_lbs_ts==0）或间隔已到：立即试 LBS。启动时 utime.time() 可能很小，仅靠 now>=lbs_interval 会一直不成立
@@ -557,7 +554,6 @@ def main():
                                 gps_data["accuracy"] = lbs_acc
                                 gps_data["_source"] = "LBS"
                                 lat, lon = lbs_lat, lbs_lon
-                            t_lbs = utime.ticks_ms()
                     if lat is not None and lon is not None and gps_data.get("_source") != "LBS":
                         gps_data["_source"] = "GNSS"
                     # OLED 三款界面统一刷新（电池、速度不变；短按电源键切换界面）
@@ -601,19 +597,16 @@ def main():
                         heading=gps_data.get("track"),
                         sats=gps_data.get("sats"),
                     )
-                    t_oled = utime.ticks_ms()
                     if lat is None or lon is None:
                         utime.sleep(1)
                         continue
 
                     # APRS：有位置且间隔到时则入队（异步上报在 aprs_report.py）
-                    t_aprs = t_oled
                     if aprs_report and aprs_cfg.get("aprs_callsign"):
                         aprs_interval = aprs_cfg.get("aprs_interval", 60)
                         if (now - last_aprs_ts) >= aprs_interval:
                             aprs_report.enqueue(gps_data)
                             last_aprs_ts = now
-                            t_aprs = utime.ticks_ms()
 
                     # 2) 间隔：速度≤阈值按静止间隔，否则按运动间隔
                     if now - last_report_ts < moving_interval:
@@ -624,26 +617,11 @@ def main():
                         utime.sleep(1)
                         continue
                     last_still_report_ts = now
-                    t_before_traccar = utime.ticks_ms()
 
                     # 打点：构造 Traccar 载荷并入队（rssi/cell/battery 从全局缓存读，不阻塞）
                     payload = build_traccar_payload(device_id, lat, lon, gps_data)
-                    t_after_build = utime.ticks_ms()
                     if traccar_report:
                         traccar_report.enqueue(payload)
-                    t_traccar = utime.ticks_ms()
-
-                    # 耗时打点（ms）：traccar 段细化为 build / enqueue，便于排查阻塞点
-                    d_gnss = utime.ticks_diff(t_gnss, t0)
-                    d_lbs = utime.ticks_diff(t_lbs, t_gnss)
-                    d_oled = utime.ticks_diff(t_oled, t_lbs)
-                    d_aprs = utime.ticks_diff(t_aprs, t_oled)
-                    d_traccar = utime.ticks_diff(t_traccar, t_aprs)
-                    d_traccar_build = utime.ticks_diff(t_after_build, t_before_traccar)
-                    d_traccar_enqueue = utime.ticks_diff(t_traccar, t_after_build)
-                    total_ms = utime.ticks_diff(t_traccar, t0)
-                    print("[timing] gnss=%d lbs=%d oled=%d aprs=%d traccar=%d (build=%d enqueue=%d) total=%d ms" % (
-                        d_gnss, d_lbs, d_oled, d_aprs, d_traccar, d_traccar_build, d_traccar_enqueue, total_ms))
 
                     utime.sleep(1)
                 except Exception as loop_err:
