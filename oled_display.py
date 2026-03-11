@@ -140,13 +140,15 @@ def _draw_char(i2c, page, col, ch, font):
     return w + 1
 
 
-def _draw_string(i2c, page, col, s, font):
-    """从 (page, col) 起画字符串 s，使用给定 font。"""
+def _draw_string(i2c, page, col, s, font, max_col=None):
+    """从 (page, col) 起画字符串 s；max_col 不为 None 时超过即停（用于不侵占右侧速度/电量）。"""
+    if max_col is None:
+        max_col = WIDTH
     for c in s:
+        if col >= max_col:
+            break
         adv = _draw_char(i2c, page, col, c, font)
         col += adv
-        if col >= WIDTH:
-            break
 
 
 def _draw_number(i2c, page, col, s, font):
@@ -351,6 +353,50 @@ def _format_ago(sec):
     return "%dh%02dm" % (s // 3600, (s % 3600) // 60)
 
 
+def _format_ago_sec_only(sec):
+    """仅秒数，3 位占位，用于 AU/TU 显示。"""
+    if sec is None or sec < 0:
+        return "---"
+    s = min(999, max(0, int(sec)))
+    return "%03d" % s
+
+
+def _format_lat_3d4_ns(s):
+    """纬度：小数点前 3 位占位，后 4 位小数，加 N/S。如 031.1234N。"""
+    if not s:
+        return "---.----N"
+    try:
+        v = float(str(s).replace("N", "").replace("n", "").replace("S", "").replace("s", "").strip())
+    except (TypeError, ValueError):
+        return "---.----N"
+    letter = "S" if v < 0 else "N"
+    v = abs(v)
+    i = int(v)
+    f = round((v - i) * 10000)
+    if f >= 10000:
+        f = 0
+        i += 1
+    return "%03d.%04d%s" % (i, f, letter)
+
+
+def _format_lon_3d4_ew(s):
+    """经度：小数点前 3 位占位，后 4 位小数，加 E/W。如 121.5678E。"""
+    if not s:
+        return "---.----E"
+    try:
+        v = float(str(s).replace("E", "").replace("e", "").replace("W", "").replace("w", "").strip())
+    except (TypeError, ValueError):
+        return "---.----E"
+    letter = "W" if v < 0 else "E"
+    v = abs(v)
+    i = int(v)
+    f = round((v - i) * 10000)
+    if f >= 10000:
+        f = 0
+        i += 1
+    return "%03d.%04d%s" % (i, f, letter)
+
+
 # -----------------------------------------------------------------------------
 # 对外接口
 # -----------------------------------------------------------------------------
@@ -426,15 +472,128 @@ _state_multi = {
     "prev_line1": None,
     "prev_line2": None,
     "prev_line3": None,
+    "prev_sats": None,
+    "prev_bar_fill_w": None,
     "oled_error_logged": False,
 }
 
 
-def _draw_content_line(i2c, page, text):
-    """在指定页起画一行内容（左对齐，不超过 CONTENT_COL_END）。"""
+def _first_last_diff(old_str, new_str):
+    """返回 (first_diff, last_diff) 即首个和最后一个不同字符的下标（含）。"""
+    old = old_str or ""
+    new = new_str or ""
+    first = len(old)
+    for i in range(min(len(old), len(new))):
+        if old[i] != new[i]:
+            first = i
+            break
+    else:
+        first = min(len(old), len(new))
+    last = first - 1
+    for i in range(max(len(old), len(new)) - 1, first - 1, -1):
+        o = old[i] if i < len(old) else ""
+        n = new[i] if i < len(new) else ""
+        if o != n:
+            last = i
+            break
+    return first, last
+
+
+def _draw_content_line(i2c, page, text, max_col=None):
+    """在指定页起画一行内容（左对齐）；先清空该行内容区再画。max_col 限制绘制右界。"""
+    if max_col is None:
+        max_col = CONTENT_COL_END
     s = (text or "")[:CONTENT_MAX_CH]
     _fill_rect(i2c, COL_TITLE, CONTENT_COL_END, page, page + SMALL_H_PAGES - 1, 0x00)
-    _draw_string(i2c, page, COL_TITLE, s, font_small)
+    _draw_string(i2c, page, COL_TITLE, s, font_small, max_col=max_col)
+
+
+def _draw_content_line_incremental(i2c, page, prev_text, new_text, font, max_col=None, content_col_end=None):
+    """字符级增量：仅清空并重画 prev 与 new 不同的那段字符。prev_text 为 None 时整行重画。
+    content_col_end：可选，该行内容区右边界（含），不传则用 CONTENT_COL_END，用于与进度条等右侧区域隔离。"""
+    col_right = content_col_end if content_col_end is not None else CONTENT_COL_END
+    new = (new_text or "")[:CONTENT_MAX_CH]
+    if prev_text is None:
+        _fill_rect(i2c, COL_TITLE, col_right, page, page + SMALL_H_PAGES - 1, 0x00)
+        _draw_string(i2c, page, COL_TITLE, new, font, max_col=max_col or WIDTH)
+        return
+    old = (prev_text or "")[:CONTENT_MAX_CH]
+    if old == new:
+        return
+    first, last = _first_last_diff(old, new)
+    if last < first:
+        return
+    col_start = COL_TITLE + _measure_number_cols(new[:first], font)
+    w_old = _measure_number_cols(old[first : last + 1], font)
+    w_new = _measure_number_cols(new[first : last + 1], font)
+    clear_w = max(w_old, w_new)
+    col_end = col_start + clear_w - 1
+    clear_end = min(col_end, col_right)
+    if col_start <= clear_end:
+        _fill_rect(i2c, col_start, clear_end, page, page + SMALL_H_PAGES - 1, 0x00)
+    substr = new[first : last + 1]
+    if substr:
+        _draw_string(i2c, page, col_start, substr, font, max_col=max_col or WIDTH)
+
+
+# 进度条下边界上移像素数（高度降低）
+BAR_BOTTOM_INSET_PX = 4
+# 最后一页只保留低 (8 - BAR_BOTTOM_INSET_PX) 行，即 0x0F
+BAR_LAST_PAGE_MASK = 0x0F
+# 空列时下边线在新底边（最后一页的第 4 行）= 0x08
+BAR_EMPTY_LAST_ROW = 0x08
+
+
+def _draw_progress_bar(i2c, page, col_start, col_end, percent_0_100, prev_fill_w=None):
+    """
+    进度条+边框作为整体：每列要么「实心」要么「空+上下横线」。
+    下边界比行高上移 BAR_BOTTOM_INSET_PX 像素，其他边界不变。
+    prev_fill_w 不为 None 时只重绘发生变化的列（增量刷新）；为 None 时整条重画。
+    返回当前 fill_w 供调用方写入 state。
+    """
+    pct = max(0, min(100, int(percent_0_100)))
+    inner_start = col_start + 1
+    inner_end = col_end - 1
+    inner_w = max(0, inner_end - inner_start + 1)
+    fill_w = (inner_w * pct) // 100
+    page_end = page + SMALL_H_PAGES - 1
+    if SMALL_H_PAGES <= 1:
+        filled_col_bytes = bytearray([BAR_LAST_PAGE_MASK])
+        empty_col_bytes = bytearray([0x01 | BAR_EMPTY_LAST_ROW])
+    else:
+        filled_col_bytes = bytearray([0xFF] * (SMALL_H_PAGES - 1) + [BAR_LAST_PAGE_MASK])
+        empty_col_bytes = bytearray([0x01] + [0x00] * (SMALL_H_PAGES - 2) + [BAR_EMPTY_LAST_ROW])
+
+    def draw_col_filled(col):
+        _set_region(i2c, col, col, page, page_end)
+        _write_data(i2c, filled_col_bytes)
+
+    def draw_col_empty(col):
+        _set_region(i2c, col, col, page, page_end)
+        _write_data(i2c, empty_col_bytes)
+
+    if prev_fill_w is None:
+        # 整条重画：左右边框 + 每一内列（不先清空整块，由调用方保证区域已清，避免闪烁）
+        draw_col_filled(col_start)
+        draw_col_filled(col_end)
+        for i in range(inner_w):
+            col = inner_start + i
+            if i < fill_w:
+                draw_col_filled(col)
+            else:
+                draw_col_empty(col)
+    else:
+        lo = min(fill_w, prev_fill_w)
+        hi = max(fill_w, prev_fill_w)
+        for i in range(lo, hi):
+            if i >= inner_w:
+                break
+            col = inner_start + i
+            if i < fill_w:
+                draw_col_filled(col)
+            else:
+                draw_col_empty(col)
+    return fill_w
 
 
 def update_display(
@@ -464,71 +623,134 @@ def update_display(
         bat_seg = round((bat_pct or 0) * BAT_SEGMENTS / 100) if bat_pct is not None else 0
         bat_seg = max(0, min(BAT_SEGMENTS, bat_seg))
 
-        # 切换界面时清空内容区并重画
+        # 切换界面时清空整屏并重画
         if sm["display_mode"] != display_mode:
+            clear(i2c, 0x00)
             sm["display_mode"] = display_mode
             sm["prev_line0"] = None
             sm["prev_line1"] = None
             sm["prev_line2"] = None
             sm["prev_line3"] = None
+            sm["prev_sats"] = None
+            sm["prev_bar_fill_w"] = None
+            sm["prev_speed"] = None
             _fill_rect(i2c, 0, CONTENT_COL_END, 0, PAGES - 1, 0x00)
 
-        # 1) 电池、速度：与界面无关，有变化就更新
+        # 1) 电池、速度：与界面无关，有变化就更新（速度做字符级增量）
         if bat_pct is not None and bat_seg != sm["prev_bat"]:
             _draw_battery(i2c, bat_seg)
             sm["prev_bat"] = bat_seg
         if speed_str != sm["prev_speed"]:
-            w = _measure_number_cols(speed_str, font_large)
-            spd_start = max(CONTENT_COL_END + 1, SPD_COL_RIGHT - w + 1)
-            _fill_rect(i2c, spd_start, SPD_COL_RIGHT, PAGE_SPD_START, PAGE_SPD_END - 1, 0x00)
-            _draw_number_right(i2c, PAGE_SPD_START, SPD_COL_RIGHT, speed_str, font_large)
+            prev_spd = sm["prev_speed"]
+            if prev_spd is None:
+                w = _measure_number_cols(speed_str, font_large)
+                spd_start = max(CONTENT_COL_END + 1, SPD_COL_RIGHT - w + 1)
+                _fill_rect(i2c, spd_start, SPD_COL_RIGHT, PAGE_SPD_START, PAGE_SPD_END - 1, 0x00)
+                _draw_number_right(i2c, PAGE_SPD_START, SPD_COL_RIGHT, speed_str, font_large)
+            else:
+                first, last = _first_last_diff(prev_spd, speed_str)
+                if last >= first:
+                    w = _measure_number_cols(speed_str, font_large)
+                    spd_base = SPD_COL_RIGHT - w + 1
+                    if spd_base < CONTENT_COL_END + 1:
+                        spd_base = CONTENT_COL_END + 1
+                    col_start = spd_base + _measure_number_cols(speed_str[:first], font_large)
+                    w_old = _measure_number_cols(prev_spd[first : last + 1], font_large)
+                    w_new = _measure_number_cols(speed_str[first : last + 1], font_large)
+                    col_end = col_start + max(w_old, w_new) - 1
+                    col_end = min(col_end, SPD_COL_RIGHT)
+                    if col_start <= col_end:
+                        _fill_rect(i2c, col_start, col_end, PAGE_SPD_START, PAGE_SPD_END - 1, 0x00)
+                    substr = speed_str[first : last + 1]
+                    if substr:
+                        _draw_number(i2c, PAGE_SPD_START, col_start, substr, font_large)
+                else:
+                    w = _measure_number_cols(speed_str, font_large)
+                    spd_start = max(CONTENT_COL_END + 1, SPD_COL_RIGHT - w + 1)
+                    _fill_rect(i2c, spd_start, SPD_COL_RIGHT, PAGE_SPD_START, PAGE_SPD_END - 1, 0x00)
+                    _draw_number_right(i2c, PAGE_SPD_START, SPD_COL_RIGHT, speed_str, font_large)
             sm["prev_speed"] = speed_str
 
         # 2) 内容区四行：按 mode 生成标题 + 三行
         if display_mode == 0:
             line0 = "GNSS INFO"
-            line1 = (lat_disp or "---")[:CONTENT_MAX_CH]
-            line2 = (lon_disp or "---")[:CONTENT_MAX_CH]
-            line3 = ("Type:" + (gnss_type or "---"))[:CONTENT_MAX_CH]
+            line1 = _format_lat_3d4_ns(lat_disp)
+            line2 = _format_lon_3d4_ew(lon_disp)
+            line3 = "Type:" + (gnss_type or "---")
         elif display_mode == 1:
             line0 = "Report Status"
-            line1 = ("APRS: " + _format_ago(aprs_ago_sec))[:CONTENT_MAX_CH]
-            line2 = ("Traccar: " + _format_ago(traccar_ago_sec))[:CONTENT_MAX_CH]
-            line3 = (system_time_str or "--:--:--")[:CONTENT_MAX_CH]
+            line1 = "AU:" + _format_ago_sec_only(aprs_ago_sec)   # 3 位占位
+            line2 = "TU:" + _format_ago_sec_only(traccar_ago_sec)
+            try:
+                loc = utime.localtime()
+                line3 = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
+            except Exception:
+                line3 = (system_time_str or "--:--:--")
         else:
-            # mode 2: 精度、航向、卫星数量
+            # mode 2: ACC:XXX、HDG:XXX、卫星进度条
             line0 = "Acc/HDG/SAT"
             if accuracy_m is not None:
                 try:
-                    line1 = ("Acc: %.1fm" % float(accuracy_m))[:CONTENT_MAX_CH]
+                    line1 = "ACC:" + "%3d" % min(999, max(0, int(round(float(accuracy_m)))))
                 except (TypeError, ValueError):
-                    line1 = "Acc: --"
+                    line1 = "ACC: --"
             else:
-                line1 = "Acc: --"
+                line1 = "ACC: --"
             if heading is not None:
                 try:
-                    line2 = ("HDG: %.0f" % float(heading))[:CONTENT_MAX_CH]
+                    line2 = "HDG:" + "%3d" % min(999, max(0, int(round(float(heading)))))
                 except (TypeError, ValueError):
                     line2 = "HDG: --"
             else:
                 line2 = "HDG: --"
-            try:
-                line3 = ("SAT: %d" % int(sats))[:CONTENT_MAX_CH] if sats is not None else "SAT: --"
-            except (TypeError, ValueError):
-                line3 = "SAT: --"
+            line3 = None
 
+        # mode 2 时先算卫星数，用于 content_changed 与进度条
+        if display_mode == 2:
+            try:
+                _sats_val = max(0, min(50, int(sats))) if sats is not None else 0
+            except (TypeError, ValueError):
+                _sats_val = 0
+        else:
+            _sats_val = 0
+
+        # 内容区：字符级增量，只清空并重画发生变化的字符区间（布局不侵占速度区，无需重画速度）
         if line0 != sm["prev_line0"]:
-            _draw_content_line(i2c, PAGE_LINE0, line0)
+            _draw_content_line_incremental(i2c, PAGE_LINE0, sm["prev_line0"], line0, font_small)
             sm["prev_line0"] = line0
+            if bat_pct is not None:
+                _draw_battery(i2c, bat_seg)
+
         if line1 != sm["prev_line1"]:
-            _draw_content_line(i2c, PAGE_LINE1, line1)
+            _draw_content_line_incremental(i2c, PAGE_LINE1, sm["prev_line1"], line1, font_small)
             sm["prev_line1"] = line1
+
         if line2 != sm["prev_line2"]:
-            _draw_content_line(i2c, PAGE_LINE2, line2)
+            _draw_content_line_incremental(i2c, PAGE_LINE2, sm["prev_line2"], line2, font_small)
             sm["prev_line2"] = line2
-        if line3 != sm["prev_line3"]:
-            _draw_content_line(i2c, PAGE_LINE3, line3)
-            sm["prev_line3"] = line3
+
+        if display_mode == 2:
+            sat_label = "SAT:" + "%02d" % _sats_val
+            bar_start = COL_TITLE + _measure_number_cols(sat_label, font_small) + 5
+            pct = (_sats_val * 100) // 50
+            # SAT:XX 字符级增量，内容区右边界到 bar_start-1，不碰进度条
+            if sat_label != sm["prev_line3"]:
+                _draw_content_line_incremental(
+                    i2c, PAGE_LINE3, sm["prev_line3"], sat_label, font_small,
+                    max_col=bar_start - 1, content_col_end=bar_start - 1
+                )
+                sm["prev_line3"] = sat_label
+            fill_w = _draw_progress_bar(
+                i2c, PAGE_LINE3, bar_start, WIDTH - 1, pct, prev_fill_w=sm.get("prev_bar_fill_w")
+            )
+            sm["prev_sats"] = _sats_val
+            sm["prev_bar_fill_w"] = fill_w
+        else:
+            if line3 != sm["prev_line3"]:
+                _draw_content_line_incremental(i2c, PAGE_LINE3, sm["prev_line3"], line3, font_small)
+                sm["prev_line3"] = line3
+            sm["prev_sats"] = None
+            sm["prev_bar_fill_w"] = None
 
         sm["oled_error_logged"] = False
     except (OSError, Exception) as e:
