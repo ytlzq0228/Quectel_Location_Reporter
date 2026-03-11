@@ -4,10 +4,11 @@
 import utime
 
 try:
-    from misc import ADC
+    from misc import ADC, Power
     VBAT_ADC_CH = ADC.ADC0
 except Exception:
     ADC = None
+    Power = None
     VBAT_ADC_CH = None
 
 VBAT_RATIO = 4
@@ -60,19 +61,19 @@ def voltage_to_soc(vbat_v):
     return 0.0
 
 
-def _read_vbat_mv(adc, channel, samples=5):
-    buf = []
-    for _ in range(samples):
-        try:
-            mv = adc.read(channel)
-            buf.append(mv)
-        except Exception:
-            return None
-        utime.sleep_ms(50)
-    if len(buf) < 3:
-        return sum(buf) // len(buf) if buf else None
-    buf.sort()
-    return sum(buf[1:-1]) // (len(buf) - 2)
+#def _read_vbat_mv(adc, channel, samples=5):
+#    buf = []
+#    for _ in range(samples):
+#        try:
+#            mv = adc.read(channel)
+#            buf.append(mv)
+#        except Exception:
+#            return None
+#        utime.sleep_ms(50)
+#    if len(buf) < 3:
+#        return sum(buf) // len(buf) if buf else None
+#    buf.sort()
+#    return sum(buf[1:-1]) // (len(buf) - 2)
 
 
 def get_battery():
@@ -89,7 +90,7 @@ def get_battery():
         adc = ADC()
         adc.open()
         try:
-            adc_mv = _read_vbat_mv(adc, VBAT_ADC_CH)
+            adc_mv = Power.getVbatt()
             if adc_mv is None:
                 return (None, None)
             vbat_mv = adc_mv * VBAT_RATIO

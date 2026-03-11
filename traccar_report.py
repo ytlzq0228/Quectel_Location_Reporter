@@ -1,7 +1,8 @@
 # traccar_report.py - Traccar 位置上报（生产-消费异步 + 持久化）
 #
-# 主程序只调用 enqueue(payload) 打点；本模块内维护 Queue + 文件缓存，消费者线程异步上报。
-# 弱网时发送失败写入文件，重启后从文件加载到队列继续发送。
+# 主程序只调用 enqueue(payload) 打点；本模块内维护系统 Queue，生产者只写队列，消费者只读队列（RETRY 时改 next_ts 后写回队列）。
+# 备份线程定期将队列全量同步到持久化文件（全 pop → 写文件 → 全 put 回）。重启时从文件加载到队列。
+# 以上逻辑在模块内闭环，对主进程调用无影响。
 
 import utime
 import ujson
@@ -23,10 +24,13 @@ SEND_OK = True
 SEND_RETRY = "retry"
 RETRY_BACKOFF_BASE_SEC = 5
 
+# 持久化文件路径写死，不从配置读取
+TRACCAR_CACHE_FILE = "/usr/traccar_cache.txt"
+BACKUP_INTERVAL_SEC = 30
+
 # 模块内状态：由 start_consumer 初始化
 _traccar_queue = None
-_traccar_file_lock = None
-_traccar_consumer_params = None  # (traccar_host, traccar_port, device_id, traccar_cache_file, traccar_http_timeout, traccar_max_backoff)
+_traccar_consumer_params = None  # (traccar_host, traccar_port, device_id, traccar_http_timeout, traccar_max_backoff)
 
 
 def load_config():
@@ -111,17 +115,17 @@ def send_position(host, port, device_id, payload, timeout_s=10):
     except Exception as e:
         print("send_position error:", e)
         return SEND_RETRY
-
     if resp is not None:
         head = resp[:12].decode("utf-8", "ignore")
         if "200" in head or "204" in head:
             return SEND_OK
         if any(str(c) in head for c in RETRYABLE_HTTP):
             return SEND_RETRY
+    print("send_position error: not retryable", resp.decode("utf-8", "ignore"))
     return False
 
 
-# ------------------------- 持久化缓存（内部，需持锁调用）-------------------------
+# ------------------------- 备份线程：定期全量同步队列到文件 -------------------------
 def _cache_exists(cache_path):
     try:
         import uos
@@ -131,85 +135,64 @@ def _cache_exists(cache_path):
         return False
 
 
-def _cache_ensure_file(cache_path):
-    if _cache_exists(cache_path):
-        return
-    try:
-        with open(cache_path, "w") as f:
-            pass
-    except Exception as e:
-        print("traccar_cache ensure error:", e)
+def _backup_loop():
+    """备份者线程：定期将队列全量 pop → 写文件 → 全 put 回。"""
+    global _traccar_queue
+    while True:
+        utime.sleep(BACKUP_INTERVAL_SEC)
+        if _traccar_queue is None:
+            continue
+        L = []
+        while not _traccar_queue.empty():
+            try:
+                L.append(_traccar_queue.get())
+            except Exception:
+                break
+        if not L:
+            try:
+                with open(TRACCAR_CACHE_FILE, "w") as f:
+                    pass
+            except Exception:
+                pass
+            continue
+        try:
+            with open(TRACCAR_CACHE_FILE, "w") as f:
+                for item in L:
+                    f.write(ujson.dumps(item) + "\n")
+        except Exception as e:
+            print("traccar backup write error:", e)
+        for item in L:
+            try:
+                _traccar_queue.put(item)
+            except Exception as e:
+                print("traccar backup put back error:", e)
 
 
-def _cache_push_locked(cache_path, item):
-    try:
-        with open(cache_path, "a") as f:
-            f.write(ujson.dumps(item) + "\n")
-    except Exception as e:
-        print("traccar_cache push error:", e)
-
-
-def _cache_pop_locked(cache_path):
-    if not _cache_exists(cache_path):
-        return None
-    try:
-        with open(cache_path, "r") as f:
-            lines = f.readlines()
-        if not lines:
-            return None
-        first = lines[0].strip()
-        rest = lines[1:]
-        with open(cache_path, "w") as f:
-            f.write("".join(rest))
-        return ujson.loads(first)
-    except Exception as e:
-        print("traccar_cache pop error:", e)
-    return None
-
-
-def _cache_peek_next_ts_locked(cache_path):
-    if not _cache_exists(cache_path):
-        return 0
-    try:
-        with open(cache_path, "r") as f:
-            line = f.readline()
-        if not line:
-            return 0
-        item = ujson.loads(line.strip())
-        return float(item.get("next_ts", 0))
-    except Exception:
-        return 0
-
-
+# ------------------------- 消费者线程：只读队列，RETRY 时改 next_ts 后写回队列 -------------------------
 def _consumer_loop():
-    """消费者线程：优先从队列取，空则从文件取到期项；发送，失败则写回文件带退避。"""
-    global _traccar_queue, _traccar_file_lock, _traccar_consumer_params
-    if _traccar_queue is None or _traccar_file_lock is None or _traccar_consumer_params is None:
+    """消费者：只从队列取；发送成功则结束；RETRY 则改 next_ts 后 put 回队列。不操作持久化文件。"""
+    global _traccar_queue, _traccar_consumer_params
+    if _traccar_queue is None or _traccar_consumer_params is None:
         return
-    traccar_host, traccar_port, device_id, traccar_cache_file, traccar_http_timeout, traccar_max_backoff = _traccar_consumer_params
+    traccar_host, traccar_port, device_id, traccar_http_timeout, traccar_max_backoff = _traccar_consumer_params
     now = utime.time
     while True:
         item = None
-        from_queue = False
-        if not _traccar_queue.empty():
-            try:
+        try:
+            if not _traccar_queue.empty():
                 item = _traccar_queue.get()
-                from_queue = True
-            except Exception:
-                pass
+        except Exception:
+            pass
         if item is None:
-            _traccar_file_lock.acquire()
+            utime.sleep(1)
+            continue
+
+        next_ts = float(item.get("next_ts", 0))
+        if next_ts > 0 and now() < next_ts:
             try:
-                next_ts = _cache_peek_next_ts_locked(traccar_cache_file)
-                if next_ts <= now():
-                    item = _cache_pop_locked(traccar_cache_file)
+                _traccar_queue.put(item)
             except Exception:
                 pass
-            try:
-                _traccar_file_lock.release()
-            except Exception:
-                pass
-        if item is None:
             utime.sleep(1)
             continue
 
@@ -217,16 +200,6 @@ def _consumer_loop():
         attempts = item.get("attempts", 0)
         r = send_position(traccar_host, traccar_port, device_id, payload, traccar_http_timeout)
         if r == SEND_OK:
-            if from_queue:
-                _traccar_file_lock.acquire()
-                try:
-                    _cache_pop_locked(traccar_cache_file)
-                except Exception:
-                    pass
-                try:
-                    _traccar_file_lock.release()
-                except Exception:
-                    pass
             print("Traccar Sent: %s %s" % (
                 "%.6f" % float(payload.get("lat", 0)),
                 "%.6f" % float(payload.get("lon", 0)),
@@ -236,60 +209,46 @@ def _consumer_loop():
             backoff = min(traccar_max_backoff, attempts * RETRY_BACKOFF_BASE_SEC)
             item["attempts"] = attempts
             item["next_ts"] = now() + backoff
-            _traccar_file_lock.acquire()
             try:
-                _cache_push_locked(traccar_cache_file, item)
-            finally:
-                try:
-                    _traccar_file_lock.release()
-                except Exception:
-                    pass
+                _traccar_queue.put(item)
+            except Exception as e:
+                print("traccar retry put back error:", e)
             print("Traccar retry later, backoff", backoff)
         utime.sleep(0)
 
 
 def start_consumer(traccar_cfg, device_id):
     """
-    启动 Traccar 消费者线程。传入 load_config() 的返回值；主程序之后只调用 enqueue。
+    启动 Traccar 消费者线程与备份线程。传入 load_config() 的返回值；主程序之后只调用 enqueue。
+    启动时从持久化文件加载到队列（若存在），再启动消费者与备份者。
     """
-    global _traccar_queue, _traccar_file_lock, _traccar_consumer_params
+    global _traccar_queue, _traccar_consumer_params
     if Queue is None:
         print("traccar_report: Queue not available, enqueue will no-op")
         return
     traccar_host = (traccar_cfg.get("traccar_host") or "").strip()
     traccar_port = traccar_cfg.get("traccar_port", 5055)
-    traccar_cache_file = "/usr/traccar_cache.txt"
     traccar_http_timeout = 10
     traccar_max_backoff = traccar_cfg.get("traccar_max_backoff", 60)
 
-    _traccar_file_lock = _thread.allocate_lock()
     _traccar_queue = Queue(200)
-    _traccar_consumer_params = (traccar_host, traccar_port, device_id, traccar_cache_file, traccar_http_timeout, traccar_max_backoff)
-    _cache_ensure_file(traccar_cache_file)
+    _traccar_consumer_params = (traccar_host, traccar_port, device_id, traccar_http_timeout, traccar_max_backoff)
 
-    _traccar_file_lock.acquire()
-    try:
-        while _cache_exists(traccar_cache_file):
-            next_ts = _cache_peek_next_ts_locked(traccar_cache_file)
-            if next_ts > utime.time():
-                break
-            item = _cache_pop_locked(traccar_cache_file)
-            if item is None:
-                break
-            try:
-                if not _traccar_queue.put(item):
-                    _cache_push_locked(traccar_cache_file, item)
-                    break
-            except Exception:
-                _cache_push_locked(traccar_cache_file, item)
-                break
-    except Exception as e:
-        print("traccar load cache error:", e)
-    finally:
+    # 启动时从持久化文件加载到队列
+    if _cache_exists(TRACCAR_CACHE_FILE):
         try:
-            _traccar_file_lock.release()
-        except Exception:
-            pass
+            with open(TRACCAR_CACHE_FILE, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = ujson.loads(line)
+                        _traccar_queue.put(item)
+                    except Exception as e:
+                        print("traccar load cache line error:", e)
+        except Exception as e:
+            print("traccar load cache error:", e)
 
     try:
         _thread.start_new_thread(_consumer_loop, ())
@@ -297,27 +256,25 @@ def start_consumer(traccar_cfg, device_id):
     except Exception as e:
         print("Traccar start_consumer error:", e)
 
+    try:
+        _thread.start_new_thread(_backup_loop, ())
+        print("Traccar backup thread started")
+    except Exception as e:
+        print("Traccar start_backup error:", e)
+
 
 def enqueue(payload):
     """
-    生产：将一条位置入队并追加到持久化文件。主程序只负责按间隔调用此接口打点。
+    生产：仅将一条位置入队。主程序只负责按间隔调用此接口打点；不写持久化文件。
     """
-    global _traccar_queue, _traccar_file_lock, _traccar_consumer_params
+    global _traccar_queue, _traccar_consumer_params
     if _traccar_queue is None or _traccar_consumer_params is None:
         return
-    _, _, _, traccar_cache_file, _, _ = _traccar_consumer_params
     item = {"payload": payload, "attempts": 0, "next_ts": 0}
-    if _traccar_file_lock is not None:
-        _traccar_file_lock.acquire()
-        try:
-            _cache_push_locked(traccar_cache_file, item)
-        finally:
-            try:
-                _traccar_file_lock.release()
-            except Exception:
-                pass
     try:
+        print(utime.ticks_ms())
         _traccar_queue.put(item)
+        print(utime.ticks_ms())
     except Exception as e:
         print("traccar enqueue put error:", e)
     lat = payload.get("lat")
