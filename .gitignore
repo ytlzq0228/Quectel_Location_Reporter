@@ -22,8 +22,8 @@ dist/
 venv/
 .env/
 .venv/
-.png
-.pgm
+*.png
+*.pgm
 
 # 日志
 *.log
@@ -32,3 +32,4 @@ venv/
 *.swp
 *.tmp
 *.db*
+oled_simulator_macos.py
