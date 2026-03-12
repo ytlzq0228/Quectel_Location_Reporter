@@ -22,6 +22,8 @@ dist/
 venv/
 .env/
 .venv/
+.png
+.pgm
 
 # 日志
 *.log
