@@ -28,6 +28,7 @@
 | 体积       | 较大         | **尺寸小巧**           |
 
 同时模组支持I2C通信，这不得搞一块OLED屏幕上去，现在该项目支持OLED屏幕显示状态，单击电源按钮切换屏幕显示。
+
 ![在这里插入图片描述](https://i-blog.csdnimg.cn/direct/cab1147b3331423faa3a5f513acb7918.png) ![在这里插入图片描述](https://i-blog.csdnimg.cn/direct/d21386e3ab024a46904e0f657f3ccfa2.png) ![在这里插入图片描述](https://i-blog.csdnimg.cn/direct/fee1d246343749e991514dcd5b4d7373.png) 
 
 ---
