@@ -93,7 +93,7 @@ def load_config():
         "still_interval": 300,
         "still_speed_threshold": 5,
         "flash_gpio": -1,
-        "network_timeout": 60,
+        "network_check_timeout": 60,
         "wdt_period": 60,
         "lbs_server": "",
         "lbs_port": 80,
@@ -410,6 +410,9 @@ def _powerkey_callback(status):
             _display_mode = (_display_mode + 1) % 3
         _powerkey_press_ts = None
 
+# 需要重启时抛出此异常（MicroPython 中 SystemExit 可能被运行时直接处理，无法在入口处捕获）
+class NeedRestart(Exception):
+    pass
 
 # ------------------------- 主流程 -------------------------
 def main():
@@ -446,11 +449,12 @@ def main():
 
         print("wait network...")
         oled_status("wait network...")
-        stagecode, subcode = checkNet.waitNetworkReady(cfg["network_timeout"])
+        stagecode, subcode = checkNet.waitNetworkReady(cfg["network_check_timeout"])
         if stagecode != 3:
-            print("network not ready, exit.")
+            print("network not ready, exit."+str(stagecode) + "," + str(subcode))
             oled_status("net not ready")
-            raise SystemExit
+            oled_status("net code:" + str(stagecode) + "," + str(subcode))
+            raise NeedRestart("network not ready")
         print("network ready")
         oled_status("network ready")
 
@@ -471,7 +475,7 @@ def main():
         if ret != 0:
             print("GNSS init failed, ret:", ret)
             oled_status("GNSS init failed")
-            raise SystemExit
+            raise NeedRestart("network not ready")
         print("GNSS init ok")
         oled_status("GNSS init ok")
 
@@ -643,6 +647,13 @@ def main():
             print("GNSS_Reporter exit.")
             if _powerkey_exit_requested:
                 Power.powerDown()
+    except NeedRestart as e:
+        print("NeedRestart:", e)
+        oled_status("PowerRestarting...")
+        Power.powerRestart()
+    except Exception as e:
+        print("Exception:", e)
+        oled_status("Exception:" + str(e)[:17])
     finally:
         oled_status("exit.")
         oled_display.clear(oled_i2c)

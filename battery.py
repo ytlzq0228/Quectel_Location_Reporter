@@ -61,22 +61,22 @@ def voltage_to_soc(vbat_v):
     return 0.0
 
 
-#def _read_vbat_mv(adc, channel, samples=5):
-#    buf = []
-#    for _ in range(samples):
-#        try:
-#            mv = adc.read(channel)
-#            buf.append(mv)
-#        except Exception:
-#            return None
-#        utime.sleep_ms(50)
-#    if len(buf) < 3:
-#        return sum(buf) // len(buf) if buf else None
-#    buf.sort()
-#    return sum(buf[1:-1]) // (len(buf) - 2)
+def _read_vbat_mv(adc, channel, samples=5):
+    buf = []
+    for _ in range(samples):
+        try:
+            mv = adc.read(channel)
+            buf.append(mv)
+        except Exception:
+            return None
+        utime.sleep_ms(50)
+    if len(buf) < 3:
+        return sum(buf) // len(buf) if buf else None
+    buf.sort()
+    return sum(buf[1:-1]) // (len(buf) - 2)
 
 
-def get_battery():
+def get_battery_from_ADC():
     """
     读取电池电压与剩余电量。
     返回 (batteryLevel, batteryVoltage)：
@@ -90,7 +90,7 @@ def get_battery():
         adc = ADC()
         adc.open()
         try:
-            adc_mv = Power.getVbatt()
+            adc_mv = _read_vbat_mv(adc, VBAT_ADC_CH)
             if adc_mv is None:
                 return (None, None)
             vbat_mv = adc_mv * VBAT_RATIO
@@ -104,6 +104,25 @@ def get_battery():
                 pass
     except Exception:
         return (None, None)
+
+def get_battery():
+    """
+    读取电池电压与剩余电量。
+    返回 (batteryLevel, batteryVoltage)：
+      - batteryLevel: 0~100 的浮点数（百分比，不带%）
+      - batteryVoltage: 电压(V) 浮点数
+    若 ADC 不可用或读取失败，返回 (None, None)。
+    """
+    if ADC is None or VBAT_ADC_CH is None:
+        return (None, None)
+    try:
+        vbat_mv = Power.getVbatt()
+        vbat_v = (vbat_mv + VBAT_CALIBRATION_MV) / 1000.0
+        soc = voltage_to_soc(vbat_v)
+        return (round(soc, 2), round(vbat_v, 2))
+    except Exception:
+        return (None, None)
+
 
 if __name__ == "__main__":
     print(get_battery())

@@ -53,7 +53,7 @@ def load_config():
         "still_interval": _int_val(cfg.get("still_interval"), 300),
         "still_speed_threshold": _int_val(cfg.get("still_speed_threshold"), 5),
         "flash_gpio": _int_val(cfg.get("flash_gpio"), -1),
-        "network_timeout": _int_val(cfg.get("network_timeout"), 60),
+        "network_check_timeout": _int_val(cfg.get("network_check_timeout"), 60),
         "wdt_period": _int_val(cfg.get("wdt_period"), 60),
         # LBS
         "lbs_server": cfg.get("lbs_server", "").strip(),

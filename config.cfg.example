@@ -29,7 +29,7 @@ aprs_interval=60
 flash_gpio=-1
 
 # 网络就绪等待超时（秒）
-network_timeout=60
+network_check_timeout=10
 # HTTP 请求超时（秒）
 http_timeout=10
 # 发送失败后重试退避上限（秒）
