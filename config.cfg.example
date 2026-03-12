@@ -39,6 +39,7 @@ max_backoff=60
 wdt_period=60
 
 # LBS 基站定位参数（lbs_test.py 使用；仅部分模组支持 cellLocator）
+#申请移远LBS token https://portal.iotomp.com/locator_token.html
 lbs_token=5Fv*********vs
 lbs_server=www.queclocator.com
 lbs_port=80
