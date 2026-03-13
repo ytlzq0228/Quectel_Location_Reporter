@@ -412,7 +412,7 @@ _screen_off = False    # 熄屏后为 True，短按恢复
 LONG_PRESS_MS = 1500
 SHORT_PRESS_MIN_MS = 50
 
-SETTINGS_TEXTS = ("> Screen off", "> Power off", "> FOTA")
+SETTINGS_OPTIONS = ("Screen off", "Power off", "FOTA")
 
 
 def _powerkey_callback(status):
@@ -565,6 +565,8 @@ def main():
         last_still_report_ts = 0
         last_lbs_ts = 0
         tick = 0
+        prev_in_settings = False
+        prev_settings_option = -1
 
         try:
             pk = PowerKey()
@@ -664,9 +666,15 @@ def main():
                     if _screen_off:
                         oled_display.update_display(oled_i2c, 3, 0)
                     elif _in_settings:
-                        oled_display.clear(oled_i2c)
-                        oled_display.show_boot_message(oled_i2c, SETTINGS_TEXTS[_settings_option])
+                        if not prev_in_settings or prev_settings_option != _settings_option:
+                            oled_display.clear(oled_i2c)
+                            for i in range(3):
+                                line = ("> " if i == _settings_option else "  ") + SETTINGS_OPTIONS[i]
+                                oled_display.show_boot_message(oled_i2c, line)
+                        prev_in_settings = True
+                        prev_settings_option = _settings_option
                     else:
+                        prev_in_settings = False
                         oled_display.update_display(
                             oled_i2c,
                             _display_mode,
