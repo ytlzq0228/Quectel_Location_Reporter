@@ -203,10 +203,12 @@ def _consumer_loop():
         attempts = item.get("attempts", 0)
         r = send_position(traccar_host, traccar_port, device_id, payload, traccar_http_timeout)
         if r == SEND_OK:
-            _log.info("Traccar Sent: %s %s" % (
-                "%.6f" % float(payload.get("lat", 0)),
-                "%.6f" % float(payload.get("lon", 0)),
-            ))
+            try:
+                lat, lon = payload.get("lat"), payload.get("lon")
+                msg = "Traccar Sent %.6f %.6f" % (float(lat or 0), float(lon or 0))
+            except (TypeError, ValueError):
+                msg = "Traccar Sent (ok)"
+            _log.info(msg)
         elif r == SEND_RETRY:
             attempts += 1
             backoff = min(traccar_max_backoff, attempts * RETRY_BACKOFF_BASE_SEC)
@@ -281,4 +283,4 @@ def enqueue(payload):
     lat = payload.get("lat")
     lon = payload.get("lon")
     if lat is not None and lon is not None:
-        _log.info("Traccar Cached: %.6f %.6f" % (float(lat), float(lon)))
+        _log.debug("Traccar Cached: %.6f %.6f" % (float(lat), float(lon)))

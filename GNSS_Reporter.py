@@ -469,6 +469,8 @@ def main():
             if ret_ntp == 0:
                 _log.info("NTP sync ok")
                 oled_status("NTP ok")
+                loc = utime.localtime()
+                oled_status("%04d%02d%02d %02d:%02d:%02d" % (loc[0], loc[1], loc[2], loc[3], loc[4], loc[5]))
             else:
                 _log.warning("NTP sync failed, ret: %s" % ret_ntp)
                 oled_status("NTP fail")

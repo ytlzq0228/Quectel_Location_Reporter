@@ -277,7 +277,11 @@ def _consumer_loop():
         ok = send_aprs(_aprs_cfg, frame_body)
         if ok:
             lat, lon = gps_data.get("lat"), gps_data.get("lon")
-            _log.info("APRS Sent: %.6f %.6f" % (float(lat), float(lon)))
+            try:
+                msg = "APRS Sent %.6f %.6f" % (float(lat), float(lon))
+            except (TypeError, ValueError):
+                msg = "APRS Sent (ok)"
+            _log.info(msg)
         else:
             attempts = item.get("attempts", 0) + 1
             backoff = min(APRS_MAX_BACKOFF, attempts * APRS_RETRY_BACKOFF_BASE_SEC)
@@ -348,4 +352,4 @@ def enqueue(gps_data):
         _aprs_queue.put(item)
     except Exception as e:
         _log.error("aprs enqueue put error: %s" % e)
-    _log.info("APRS Cached: %.6f %.6f" % (float(gps_data.get("lat")), float(gps_data.get("lon"))))
+    _log.debug("APRS Cached: %.6f %.6f" % (float(gps_data.get("lat")), float(gps_data.get("lon"))))
