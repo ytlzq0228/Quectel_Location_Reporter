@@ -45,8 +45,8 @@ def ensure_fonts_dir():
 
 def run_fota_with_progress(oled_status_cb=None, log_info_cb=None):
     """
-    执行 FOTA，使用 bulk_download 一次性批量下载；支持过程回调（OLED/LED 与 log）。
-    oled_status_cb(msg): 显示短状态
+    执行 FOTA，逐个文件下载，实时在 OLED 和 log 显示进度。
+    oled_status_cb(msg): 显示短状态，如 "FOTA 3/12"
     log_info_cb(msg): 记录过程日志
     结束（正常或异常）时一定会 Power.powerRestart()，由本模块保证，主进程不负责重启。
     返回: failed_list，空表示全部成功（调用方通常不会收到返回，因会先重启）。
@@ -57,9 +57,25 @@ def run_fota_with_progress(oled_status_cb=None, log_info_cb=None):
         if log_info_cb:
             log_info_cb("FOTA start, %d files" % n)
         if oled_status_cb:
-            oled_status_cb("FOTA download %d..." % n)
+            oled_status_cb("FOTA 0/%d" % n)
         fota = app_fota.new()
-        failed = fota.bulk_download(DOWNLOAD_LIST)
+        failed = []
+        for i, item in enumerate(DOWNLOAD_LIST):
+            url, path = item["url"], item["file_name"]
+            if oled_status_cb:
+                oled_status_cb("FOTA %d/%d" % (i + 1, n))
+            if log_info_cb:
+                log_info_cb("FOTA %d/%d %s" % (i + 1, n, path))
+            try:
+                ret = fota.download(url, path)
+                if ret != 0:
+                    failed.append(item)
+                    if log_info_cb:
+                        log_info_cb("FOTA fail: %s" % path)
+            except Exception as e:
+                failed.append(item)
+                if log_info_cb:
+                    log_info_cb("FOTA fail: %s %s" % (path, e))
         if not failed:
             if log_info_cb:
                 log_info_cb("FOTA all ok, set_update_flag")

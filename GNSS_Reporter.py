@@ -91,6 +91,7 @@ except Exception:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
+VERSION = "1.2.1"
 
 
 def load_config():
@@ -436,10 +437,11 @@ def main():
     _powerkey_fota_requested = False
     _display_mode = 0
     _log.info("GNSS_Reporter starting...")
-
+    _log.info("Version: %s" % VERSION)
     # 第一时间初始化 OLED 并显示 Booting（无屏或异常时 oled_display 内部静默）
     oled_i2c = oled_display.init_oled()
     oled_display.show_boot_message(oled_i2c, "Booting...")
+    oled_display.show_boot_message(oled_i2c, "Version: %s" % VERSION)
 
     def oled_status(msg):
         """将状态/报错同步到 OLED 单行（无上位机时便于看运行状态）。"""
@@ -570,15 +572,7 @@ def main():
                         oled_status("FOTA...")
                         try:
                             if fota_update:
-                                failed = fota_update.run_fota_with_progress(
-                                    oled_status_cb=oled_status,
-                                    log_info_cb=_log.info,
-                                )
-                                if failed:
-                                    _log.warning("FOTA partial fail: %s" % len(failed))
-                                    oled_status("FOTA fail %d" % len(failed))
-                                else:
-                                    oled_status("FOTA ok, restart")
+                                fota_update.run_fota_with_progress(oled_status_cb=oled_status,log_info_cb=_log.info,)
                             else:
                                 _log.warning("fota_update not available")
                                 oled_status("FOTA module n/a")
