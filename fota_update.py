@@ -14,6 +14,7 @@ REPO_RAW = "https://raw.githubusercontent.com/ytlzq0228/Quectel_Location_Reporte
 # 需要下载到 /usr 的非测试文件（不含 test_*.py、tools、docs、模拟器等）
 # url 用 REPO_RAW 拼接；file_name 为设备上的绝对路径
 DOWNLOAD_LIST = [
+    {"url": REPO_RAW + "/fota_update.py", "file_name": "/usr/fota_update.py"},
     {"url": REPO_RAW + "/config.py", "file_name": "/usr/config.py"},
     {"url": REPO_RAW + "/main.py", "file_name": "/usr/main.py"},
     {"url": REPO_RAW + "/GNSS_Reporter.py", "file_name": "/usr/GNSS_Reporter.py"},
