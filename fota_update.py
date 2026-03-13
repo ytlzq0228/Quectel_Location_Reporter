@@ -11,8 +11,8 @@ from misc import Power
 
 
 # GitHub 仓库 raw 地址（main 分支）
-REPO_RAW = "https://raw.githubusercontent.com/ytlzq0228/Quectel_Location_Reporter/main"
-
+#REPO_RAW = "https://raw.githubusercontent.com/ytlzq0228/Quectel_Location_Reporter/main"
+REPO_RAW = "https://traccar.ctsdn.com:4343/gitproxy/ytlzq0228/Quectel_Location_Reporter/main"
 # 需要下载到 /usr 的非测试文件（不含 test_*.py、tools、docs、模拟器等）
 # url 用 REPO_RAW 拼接；file_name 为设备上的绝对路径
 DOWNLOAD_LIST = [
