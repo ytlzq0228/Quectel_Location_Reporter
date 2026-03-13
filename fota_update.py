@@ -41,15 +41,43 @@ def ensure_fonts_dir():
         pass
 
 
+def run_fota_with_progress(oled_status_cb=None, log_info_cb=None):
+    """
+    执行 FOTA，使用 bulk_download 一次性批量下载；支持过程回调（OLED/LED 与 log）。
+    oled_status_cb(msg): 显示短状态
+    log_info_cb(msg): 记录过程日志
+    结束（正常或异常）时一定会 Power.powerRestart()，由本模块保证，主进程不负责重启。
+    返回: failed_list，空表示全部成功（调用方通常不会收到返回，因会先重启）。
+    """
+    try:
+        ensure_fonts_dir()
+        n = len(DOWNLOAD_LIST)
+        if log_info_cb:
+            log_info_cb("FOTA start, %d files" % n)
+        if oled_status_cb:
+            oled_status_cb("FOTA download %d..." % n)
+        fota = app_fota.new()
+        failed = fota.bulk_download(DOWNLOAD_LIST)
+        if not failed and log_info_cb:
+            log_info_cb("FOTA all ok, set_update_flag")
+        if not failed:
+            fota.set_update_flag()
+        elif log_info_cb:
+            log_info_cb("FOTA partial fail: %s" % len(failed))
+        if log_info_cb:
+            log_info_cb("FOTA done, restart")
+        if oled_status_cb:
+            oled_status_cb("FOTA ok" if not failed else "FOTA fail %d" % len(failed))
+        return failed
+    finally:
+        Power.powerRestart()
+
+
 def run_fota():
-    ensure_fonts_dir()
-    fota = app_fota.new()
-    failed = fota.bulk_download(DOWNLOAD_LIST)
+    """独立运行：带简单进度输出，结束后由 run_fota_with_progress 的 finally 统一重启。"""
+    failed = run_fota_with_progress(oled_status_cb=print, log_info_cb=print)
     if failed:
         print("FOTA 部分失败:", failed)
-        return
-    fota.set_update_flag()
-    Power.powerRestart()
 
 
 if __name__ == "__main__":

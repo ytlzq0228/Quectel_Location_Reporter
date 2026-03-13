@@ -62,6 +62,12 @@ except Exception as e:
     config = None
 
 try:
+    import fota_update
+except Exception as e:
+    _log.warning("fota_update import failed: %s" % e)
+    fota_update = None
+
+try:
     import oled_display
 except Exception as e:
     _log.warning("oled_display import failed: %s" % e)
@@ -394,22 +400,26 @@ def build_traccar_payload(device_id, lat, lon, gps_data):
     return payload
 
 
-# PowerKey：长按>=3秒退出，短按切换显示界面
+# PowerKey：长按 3~5s 关机退出，长按>=5s 进入 FOTA；短按切换显示界面
 _powerkey_exit_requested = False
+_powerkey_fota_requested = False
 _powerkey_press_ts = None
 _display_mode = 0  # 0=GNSS INFO, 1=Report Status, 2=精度/航向/卫星
-LONG_PRESS_MS = 3000
-SHORT_PRESS_MIN_MS = 50  # 防抖，过短视为误触
+LONG_PRESS_EXIT_MS = 3000   # 3~5s 内松开：关机
+FOTA_PRESS_MS = 5000       # >=5s 松开：进入 FOTA，结束后重启
+SHORT_PRESS_MIN_MS = 50    # 防抖，过短视为误触
 
 
 def _powerkey_callback(status):
-    """PowerKey 回调：status 0=松开，1=按下。长按>=3s 请求退出，短按切换显示模式。"""
-    global _powerkey_exit_requested, _powerkey_press_ts, _display_mode
+    """PowerKey 回调：status 0=松开，1=按下。>=5s FOTA，3~5s 关机，短按切换显示。"""
+    global _powerkey_exit_requested, _powerkey_fota_requested, _powerkey_press_ts, _display_mode
     if status == 1:
         _powerkey_press_ts = utime.ticks_ms()
     elif status == 0 and _powerkey_press_ts is not None:
         duration = utime.ticks_diff(utime.ticks_ms(), _powerkey_press_ts)
-        if duration >= LONG_PRESS_MS:
+        if duration >= FOTA_PRESS_MS:
+            _powerkey_fota_requested = True
+        elif duration >= LONG_PRESS_EXIT_MS:
             _powerkey_exit_requested = True
         elif duration >= SHORT_PRESS_MIN_MS:
             _display_mode = (_display_mode + 1) % 3
@@ -421,8 +431,9 @@ class NeedRestart(Exception):
 
 # ------------------------- 主流程 -------------------------
 def main():
-    global _powerkey_exit_requested, _display_mode
+    global _powerkey_exit_requested, _powerkey_fota_requested, _display_mode
     _powerkey_exit_requested = False
+    _powerkey_fota_requested = False
     _display_mode = 0
     _log.info("GNSS_Reporter starting...")
 
@@ -532,7 +543,7 @@ def main():
         try:
             pk = PowerKey()
             if pk.powerKeyEventRegister(_powerkey_callback) == 0:
-                _log.info("PowerKey: long press >= 3s exit, short press switch display.")
+                _log.info("PowerKey: 3~5s exit, >=5s FOTA, short press switch display.")
                 oled_status("PowerKey Register ok")
             else:
                 _log.warning("PowerKey register failed.")
@@ -554,8 +565,29 @@ def main():
                         pass
                 try:
                     tick += 1
+                    if _powerkey_fota_requested:
+                        _log.info("PowerKey long press >=5s, enter FOTA.")
+                        oled_status("FOTA...")
+                        try:
+                            if fota_update:
+                                failed = fota_update.run_fota_with_progress(
+                                    oled_status_cb=oled_status,
+                                    log_info_cb=_log.info,
+                                )
+                                if failed:
+                                    _log.warning("FOTA partial fail: %s" % len(failed))
+                                    oled_status("FOTA fail %d" % len(failed))
+                                else:
+                                    oled_status("FOTA ok, restart")
+                            else:
+                                _log.warning("fota_update not available")
+                                oled_status("FOTA module n/a")
+                        except Exception as fota_err:
+                            _log.error("FOTA error: %s" % fota_err)
+                            oled_status("FOTA err, restart")
+                        break
                     if _powerkey_exit_requested:
-                        _log.info("PowerKey long press, exit.")
+                        _log.info("PowerKey long press 3~5s, exit.")
                         oled_status("PowerKey exit")
                         break
                     if tick % FLASH_CHECK_INTERVAL_TICKS == 0 and is_flash_mode(flash_pin):
