@@ -8,6 +8,7 @@ FOTA 程序：从 GitHub 仓库下载 Quectel_Location_Reporter 非测试文件�
 import app_fota
 from misc import Power
 
+
 # GitHub 仓库 raw 地址（main 分支）
 REPO_RAW = "https://raw.githubusercontent.com/ytlzq0228/Quectel_Location_Reporter/main"
 
@@ -58,16 +59,21 @@ def run_fota_with_progress(oled_status_cb=None, log_info_cb=None):
             oled_status_cb("FOTA download %d..." % n)
         fota = app_fota.new()
         failed = fota.bulk_download(DOWNLOAD_LIST)
-        if not failed and log_info_cb:
-            log_info_cb("FOTA all ok, set_update_flag")
         if not failed:
+            if log_info_cb:
+                log_info_cb("FOTA all ok, set_update_flag")
+            if oled_status_cb:
+                oled_status_cb("FOTA all ok")
             fota.set_update_flag()
-        elif log_info_cb:
-            log_info_cb("FOTA partial fail: %s" % len(failed))
+        else:
+            if log_info_cb:
+                log_info_cb("FOTA partial fail: %s" % len(failed))
+            if oled_status_cb:
+                oled_status_cb("FOTA fail %d" % len(failed))
         if log_info_cb:
             log_info_cb("FOTA done, restart")
         if oled_status_cb:
-            oled_status_cb("FOTA ok" if not failed else "FOTA fail %d" % len(failed))
+            oled_status_cb("FOTA restart...")
         return failed
     finally:
         Power.powerRestart()
