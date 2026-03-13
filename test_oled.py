@@ -26,7 +26,7 @@ except Exception:
 # PowerKey：长按>=3秒退出，短按切换显示界面
 _powerkey_exit_requested = False
 _powerkey_press_ts = None
-_display_mode = 0  # 0=GNSS INFO, 1=Report Status, 2=Acc/HDG/SAT
+_display_mode = 0  # 0=GNSS INFO, 1=Report Status, 2=Acc/HDG/SAT, 3=关闭显示
 LONG_PRESS_MS = 3000
 SHORT_PRESS_MIN_MS = 50
 
@@ -41,7 +41,7 @@ def _powerkey_callback(status):
         if duration >= LONG_PRESS_MS:
             _powerkey_exit_requested = True
         elif duration >= SHORT_PRESS_MIN_MS:
-            _display_mode = (_display_mode + 1) % 3
+            _display_mode = (_display_mode + 1) % 4
         _powerkey_press_ts = None
 
 

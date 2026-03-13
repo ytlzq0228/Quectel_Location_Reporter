@@ -615,16 +615,28 @@ def update_display(
     sats=None,
 ):
     """
-    三款界面统一更新：电池、速度始终一致；内容区按 display_mode 显示。
-    display_mode: 0=GNSS INFO(经度/纬度/Type), 1=Report Status(APRS/Traccar/系统时间), 2=精度/航向/卫星数
+    四款界面统一更新：电池、速度始终一致；内容区按 display_mode 显示。
+    display_mode: 0=GNSS INFO, 1=Report Status, 2=精度/航向/卫星数, 3=关闭显示
     """
     try:
         if i2c is None:
             return
         sm = _state_multi
+
+        # 模式 3：关闭显示（SSD1306 0xAE），进入后不再刷新
+        if display_mode == 3:
+            if sm["display_mode"] != 3:
+                _cmd(i2c, 0xAE)
+                sm["display_mode"] = 3
+            return
+
         speed_str = "%03d" % min(999, max(0, int(round(float(speed_kmh or 0)))))
         bat_seg = round((bat_pct or 0) * BAT_SEGMENTS / 100) if bat_pct is not None else 0
         bat_seg = max(0, min(BAT_SEGMENTS, bat_seg))
+
+        # 从关闭显示切回：先开屏再清屏重画
+        if sm["display_mode"] == 3:
+            _cmd(i2c, 0xAF)
 
         # 切换界面时清空整屏并重画
         if sm["display_mode"] != display_mode:

@@ -404,7 +404,7 @@ def build_traccar_payload(device_id, lat, lon, gps_data):
 _powerkey_exit_requested = False
 _powerkey_fota_requested = False
 _powerkey_press_ts = None
-_display_mode = 0  # 0=GNSS INFO, 1=Report Status, 2=精度/航向/卫星
+_display_mode = 0  # 0=GNSS INFO, 1=Report Status, 2=精度/航向/卫星, 3=关闭显示
 LONG_PRESS_EXIT_MS = 3000   # 3~5s 内松开：关机
 FOTA_PRESS_MS = 5000       # >=5s 松开：进入 FOTA，结束后重启
 SHORT_PRESS_MIN_MS = 50    # 防抖，过短视为误触
@@ -422,7 +422,7 @@ def _powerkey_callback(status):
         elif duration >= LONG_PRESS_EXIT_MS:
             _powerkey_exit_requested = True
         elif duration >= SHORT_PRESS_MIN_MS:
-            _display_mode = (_display_mode + 1) % 3
+            _display_mode = (_display_mode + 1) % 4
         _powerkey_press_ts = None
 
 # 需要重启时抛出此异常（MicroPython 中 SystemExit 可能被运行时直接处理，无法在入口处捕获）
