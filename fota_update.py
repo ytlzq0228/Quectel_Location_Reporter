@@ -88,9 +88,9 @@ def run_fota_with_progress(oled_status_cb=None, log_info_cb=None):
             if oled_status_cb:
                 oled_status_cb("FOTA fail %d" % len(failed))
         if log_info_cb:
-            log_info_cb("FOTA done, restart")
+            log_info_cb("FOTA done, Device restart")
         if oled_status_cb:
-            oled_status_cb("FOTA restart...")
+            oled_status_cb("Device restart")
         return failed
     finally:
         # 留 2 秒让 log/OLED 显示完再重启，避免“没显示完就重启”
