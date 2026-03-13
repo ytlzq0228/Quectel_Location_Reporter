@@ -91,7 +91,7 @@ except Exception:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 
 
 def load_config():
@@ -401,29 +401,49 @@ def build_traccar_payload(device_id, lat, lon, gps_data):
     return payload
 
 
-# PowerKey：长按 3~5s 关机退出，长按>=5s 进入 FOTA；短按切换显示界面
+# PowerKey：仅短按/长按，长按阈值 1500ms；短按轮播信息页或设置项，长按进设置或确定
 _powerkey_exit_requested = False
 _powerkey_fota_requested = False
 _powerkey_press_ts = None
-_display_mode = 0  # 0=GNSS INFO, 1=Report Status, 2=精度/航向/卫星, 3=关闭显示
-LONG_PRESS_EXIT_MS = 3000   # 3~5s 内松开：关机
-FOTA_PRESS_MS = 5000       # >=5s 松开：进入 FOTA，结束后重启
-SHORT_PRESS_MIN_MS = 50    # 防抖，过短视为误触
+_display_mode = 0       # 0/1/2 三个信息页
+_in_settings = False   # 是否在设置页
+_settings_option = 0   # 设置项 0=熄屏 1=关机 2=FOTA
+_screen_off = False    # 熄屏后为 True，短按恢复
+LONG_PRESS_MS = 1500
+SHORT_PRESS_MIN_MS = 50
+
+SETTINGS_TEXTS = ("> Screen off", "> Power off", "> FOTA")
 
 
 def _powerkey_callback(status):
-    """PowerKey 回调：status 0=松开，1=按下。>=5s FOTA，3~5s 关机，短按切换显示。"""
-    global _powerkey_exit_requested, _powerkey_fota_requested, _powerkey_press_ts, _display_mode
+    """短按：信息页轮播(3 页)或设置项切换；长按：进设置或确定当前选项。熄屏后仅短按恢复。"""
+    global _powerkey_exit_requested, _powerkey_fota_requested, _powerkey_press_ts
+    global _display_mode, _in_settings, _settings_option, _screen_off
     if status == 1:
         _powerkey_press_ts = utime.ticks_ms()
     elif status == 0 and _powerkey_press_ts is not None:
         duration = utime.ticks_diff(utime.ticks_ms(), _powerkey_press_ts)
-        if duration >= FOTA_PRESS_MS:
-            _powerkey_fota_requested = True
-        elif duration >= LONG_PRESS_EXIT_MS:
-            _powerkey_exit_requested = True
-        elif duration >= SHORT_PRESS_MIN_MS:
-            _display_mode = (_display_mode + 1) % 4
+        if duration < SHORT_PRESS_MIN_MS:
+            pass
+        elif _screen_off:
+            _screen_off = False
+        elif _in_settings:
+            if duration >= LONG_PRESS_MS:
+                if _settings_option == 0:
+                    _screen_off = True
+                    _in_settings = False
+                elif _settings_option == 1:
+                    _powerkey_exit_requested = True
+                else:
+                    _powerkey_fota_requested = True
+            else:
+                _settings_option = (_settings_option + 1) % 3
+        else:
+            if duration >= LONG_PRESS_MS:
+                _in_settings = True
+                _settings_option = 0
+            else:
+                _display_mode = (_display_mode + 1) % 3
         _powerkey_press_ts = None
 
 # 需要重启时抛出此异常（MicroPython 中 SystemExit 可能被运行时直接处理，无法在入口处捕获）
@@ -433,9 +453,13 @@ class NeedRestart(Exception):
 # ------------------------- 主流程 -------------------------
 def main():
     global _powerkey_exit_requested, _powerkey_fota_requested, _display_mode
+    global _in_settings, _settings_option, _screen_off
     _powerkey_exit_requested = False
     _powerkey_fota_requested = False
     _display_mode = 0
+    _in_settings = False
+    _settings_option = 0
+    _screen_off = False
     _log.info("GNSS_Reporter starting...")
     _log.info("Version: %s" % VERSION)
     # 第一时间初始化 OLED 并显示 Booting（无屏或异常时 oled_display 内部静默）
@@ -545,7 +569,7 @@ def main():
         try:
             pk = PowerKey()
             if pk.powerKeyEventRegister(_powerkey_callback) == 0:
-                _log.info("PowerKey: 3~5s exit, >=5s FOTA, short press switch display.")
+                _log.info("PowerKey: short=cycle, long=settings/confirm, 1500ms.")
                 oled_status("PowerKey Register ok")
             else:
                 _log.warning("PowerKey register failed.")
@@ -568,11 +592,14 @@ def main():
                 try:
                     tick += 1
                     if _powerkey_fota_requested:
-                        _log.info("PowerKey long press >=5s, enter FOTA.")
+                        _log.info("PowerKey: FOTA selected, enter FOTA.")
                         oled_status("FOTA...")
                         try:
                             if fota_update:
-                                fota_update.run_fota_with_progress(oled_status_cb=oled_status,log_info_cb=_log.info,)
+                                fota_update.run_fota_with_progress(
+                                    oled_status_cb=oled_status,
+                                    log_info_cb=_log.info,
+                                )
                             else:
                                 _log.warning("fota_update not available")
                                 oled_status("FOTA module n/a")
@@ -581,8 +608,8 @@ def main():
                             oled_status("FOTA err, restart")
                         break
                     if _powerkey_exit_requested:
-                        _log.info("PowerKey long press 3~5s, exit.")
-                        oled_status("PowerKey exit")
+                        _log.info("PowerKey: Power off selected, exit.")
+                        oled_status("Power off...")
                         break
                     if tick % FLASH_CHECK_INTERVAL_TICKS == 0 and is_flash_mode(flash_pin):
                         _log.info("Flash pin asserted, exit.")
@@ -609,7 +636,7 @@ def main():
                     # 有有效位置且 fix 非 0 则为 GNSS；否则已由 LBS 分支设为 LBS
                     if lat is not None and lon is not None and gps_data.get("fix") != "0":
                         gps_data["_source"] = "GNSS"
-                    # OLED 三款界面统一刷新（电池、速度不变；短按电源键切换界面）
+                    # 显示：熄屏用 mode3，设置页用菜单单行，否则三款信息页轮播
                     if lat is not None and lon is not None:
                         lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
                         lon_disp = "E%.5f" % lon if lon >= 0 else "W%.5f" % (-lon)
@@ -624,33 +651,37 @@ def main():
                             bat_pct, _ = battery.get_battery()
                         except Exception:
                             pass
-                    # 显示时间用 RTC 本地时间（utime.time() 为开机秒数，仅作程序内计时）
                     try:
                         loc = utime.localtime()
                         system_time_str = "%04d-%02d-%02d %02d:%02d:%02d" % (loc[0], loc[1], loc[2], loc[3], loc[4], loc[5])
                     except Exception:
                         system_time_str = "--:--:--"
                     aprs_ago_sec = (now - last_aprs_ts) if last_aprs_ts else None
-                    # 静止时按静止间隔显示“距上次上报”，运动时按运动间隔
                     if speed_kmh <= still_speed_threshold:
                         traccar_ago_sec = (now - last_still_report_ts) if last_still_report_ts else None
                     else:
                         traccar_ago_sec = (now - last_report_ts) if last_report_ts else None
-                    oled_display.update_display(
-                        oled_i2c,
-                        _display_mode,
-                        speed_kmh,
-                        bat_pct=bat_pct,
-                        lat_disp=lat_disp,
-                        lon_disp=lon_disp,
-                        gnss_type=gnss_type,
-                        aprs_ago_sec=aprs_ago_sec,
-                        traccar_ago_sec=traccar_ago_sec,
-                        system_time_str=system_time_str,
-                        accuracy_m=gps_data.get("accuracy"),
-                        heading=gps_data.get("track"),
-                        sats=gps_data.get("sats"),
-                    )
+                    if _screen_off:
+                        oled_display.update_display(oled_i2c, 3, 0)
+                    elif _in_settings:
+                        oled_display.clear(oled_i2c)
+                        oled_display.show_boot_message(oled_i2c, SETTINGS_TEXTS[_settings_option])
+                    else:
+                        oled_display.update_display(
+                            oled_i2c,
+                            _display_mode,
+                            speed_kmh,
+                            bat_pct=bat_pct,
+                            lat_disp=lat_disp,
+                            lon_disp=lon_disp,
+                            gnss_type=gnss_type,
+                            aprs_ago_sec=aprs_ago_sec,
+                            traccar_ago_sec=traccar_ago_sec,
+                            system_time_str=system_time_str,
+                            accuracy_m=gps_data.get("accuracy"),
+                            heading=gps_data.get("track"),
+                            sats=gps_data.get("sats"),
+                        )
                     if lat is None or lon is None:
                         utime.sleep(1)
                         continue
