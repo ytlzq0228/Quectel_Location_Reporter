@@ -12,18 +12,19 @@ from misc import Power
 REPO_RAW = "https://raw.githubusercontent.com/ytlzq0228/Quectel_Location_Reporter/main"
 
 # 需要下载到 /usr 的非测试文件（不含 test_*.py、tools、docs、模拟器等）
+# url 用 REPO_RAW 拼接；file_name 为设备上的绝对路径
 DOWNLOAD_LIST = [
-    {"url": f"{REPO_RAW}/config.py", "file_name": "/usr/config.py"},
-    {"url": f"{REPO_RAW}/main.py", "file_name": "/usr/main.py"},
-    {"url": f"{REPO_RAW}/GNSS_Reporter.py", "file_name": "/usr/GNSS_Reporter.py"},
-    {"url": f"{REPO_RAW}/traccar_report.py", "file_name": "/usr/traccar_report.py"},
-    {"url": f"{REPO_RAW}/aprs_report.py", "file_name": "/usr/aprs_report.py"},
-    {"url": f"{REPO_RAW}/battery.py", "file_name": "/usr/battery.py"},
-    {"url": f"{REPO_RAW}/cell_info.py", "file_name": "/usr/cell_info.py"},
-    {"url": f"{REPO_RAW}/oled_display.py", "file_name": "/usr/oled_display.py"},
-    {"url": f"{REPO_RAW}/config.cfg.example", "file_name": "/usr/config.cfg.example"},
-    {"url": f"{REPO_RAW}/Fonts/PixelOperator_12.py", "file_name": "/usr/Fonts/PixelOperator_12.py"},
-    {"url": f"{REPO_RAW}/Fonts/PixelOperator_32.py", "file_name": "/usr/Fonts/PixelOperator_32.py"},
+    {"url": REPO_RAW + "/config.py", "file_name": "/usr/config.py"},
+    {"url": REPO_RAW + "/main.py", "file_name": "/usr/main.py"},
+    {"url": REPO_RAW + "/GNSS_Reporter.py", "file_name": "/usr/GNSS_Reporter.py"},
+    {"url": REPO_RAW + "/traccar_report.py", "file_name": "/usr/traccar_report.py"},
+    {"url": REPO_RAW + "/aprs_report.py", "file_name": "/usr/aprs_report.py"},
+    {"url": REPO_RAW + "/battery.py", "file_name": "/usr/battery.py"},
+    {"url": REPO_RAW + "/cell_info.py", "file_name": "/usr/cell_info.py"},
+    {"url": REPO_RAW + "/oled_display.py", "file_name": "/usr/oled_display.py"},
+    {"url": REPO_RAW + "/config.cfg.example", "file_name": "/usr/config.cfg.example"},
+    {"url": REPO_RAW + "/Fonts/PixelOperator_12.py", "file_name": "/usr/Fonts/PixelOperator_12.py"},
+    {"url": REPO_RAW + "/Fonts/PixelOperator_32.py", "file_name": "/usr/Fonts/PixelOperator_32.py"},
 ]
 
 
