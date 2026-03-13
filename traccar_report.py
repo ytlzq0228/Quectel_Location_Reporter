@@ -8,6 +8,9 @@ import utime
 import ujson
 import usocket as socket
 import _thread
+import log
+
+_log = log.getLogger("Traccar")
 
 try:
     import config as shared_config
@@ -54,7 +57,7 @@ def send_position(host, port, device_id, payload, timeout_s=10):
     try:
         addr = socket.getaddrinfo(host, port)[0][-1]
     except Exception as e:
-        print("getaddrinfo error:", e)
+        _log.error("getaddrinfo error: %s" % e)
         return False
 
     parts = ["id=" + str(device_id)]
@@ -107,13 +110,13 @@ def send_position(host, port, device_id, payload, timeout_s=10):
             try:
                 resp = _do_send()
             except Exception as e2:
-                print("send_position error (retry):", e2)
+                _log.warning("send_position error (retry): %s" % e2)
                 return SEND_RETRY
         else:
-            print("send_position error:", e)
+            _log.error("send_position error: %s" % e)
             return SEND_RETRY
     except Exception as e:
-        print("send_position error:", e)
+        _log.error("send_position error: %s" % e)
         return SEND_RETRY
     if resp is not None:
         head = resp[:12].decode("utf-8", "ignore")
@@ -121,7 +124,7 @@ def send_position(host, port, device_id, payload, timeout_s=10):
             return SEND_OK
         if any(str(c) in head for c in RETRYABLE_HTTP):
             return SEND_RETRY
-    print("send_position error: not retryable", resp.decode("utf-8", "ignore"))
+    _log.error("send_position error: not retryable %s" % resp.decode("utf-8", "ignore"))
     return False
 
 
@@ -160,12 +163,12 @@ def _backup_loop():
                 for item in L:
                     f.write(ujson.dumps(item) + "\n")
         except Exception as e:
-            print("traccar backup write error:", e)
+            _log.error("traccar backup write error: %s" % e)
         for item in L:
             try:
                 _traccar_queue.put(item)
             except Exception as e:
-                print("traccar backup put back error:", e)
+                _log.error("traccar backup put back error: %s" % e)
 
 
 # ------------------------- 消费者线程：只读队列，RETRY 时改 next_ts 后写回队列 -------------------------
@@ -200,7 +203,7 @@ def _consumer_loop():
         attempts = item.get("attempts", 0)
         r = send_position(traccar_host, traccar_port, device_id, payload, traccar_http_timeout)
         if r == SEND_OK:
-            print("Traccar Sent: %s %s" % (
+            _log.info("Traccar Sent: %s %s" % (
                 "%.6f" % float(payload.get("lat", 0)),
                 "%.6f" % float(payload.get("lon", 0)),
             ))
@@ -212,8 +215,8 @@ def _consumer_loop():
             try:
                 _traccar_queue.put(item)
             except Exception as e:
-                print("traccar retry put back error:", e)
-            print("Traccar retry later, backoff", backoff)
+                _log.error("traccar retry put back error: %s" % e)
+            _log.warning("Traccar retry later, backoff %s" % backoff)
         utime.sleep(0)
 
 
@@ -224,7 +227,7 @@ def start_consumer(traccar_cfg, device_id):
     """
     global _traccar_queue, _traccar_consumer_params
     if Queue is None:
-        print("traccar_report: Queue not available, enqueue will no-op")
+        _log.warning("traccar_report: Queue not available, enqueue will no-op")
         return
     traccar_host = (traccar_cfg.get("traccar_host") or "").strip()
     traccar_port = traccar_cfg.get("traccar_port", 5055)
@@ -246,21 +249,21 @@ def start_consumer(traccar_cfg, device_id):
                         item = ujson.loads(line)
                         _traccar_queue.put(item)
                     except Exception as e:
-                        print("traccar load cache line error:", e)
+                        _log.warning("traccar load cache line error: %s" % e)
         except Exception as e:
-            print("traccar load cache error:", e)
+            _log.warning("traccar load cache error: %s" % e)
 
     try:
         _thread.start_new_thread(_consumer_loop, ())
-        print("Traccar consumer thread started")
+        _log.info("Traccar consumer thread started")
     except Exception as e:
-        print("Traccar start_consumer error:", e)
+        _log.error("Traccar start_consumer error: %s" % e)
 
     try:
         _thread.start_new_thread(_backup_loop, ())
-        print("Traccar backup thread started")
+        _log.info("Traccar backup thread started")
     except Exception as e:
-        print("Traccar start_backup error:", e)
+        _log.error("Traccar start_backup error: %s" % e)
 
 
 def enqueue(payload):
@@ -274,8 +277,8 @@ def enqueue(payload):
     try:
         _traccar_queue.put(item)
     except Exception as e:
-        print("traccar enqueue put error:", e)
+        _log.error("traccar enqueue put error: %s" % e)
     lat = payload.get("lat")
     lon = payload.get("lon")
     if lat is not None and lon is not None:
-        print("Traccar Cached: %.6f %.6f" % (float(lat), float(lon)))
+        _log.info("Traccar Cached: %.6f %.6f" % (float(lat), float(lon)))

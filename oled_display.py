@@ -5,7 +5,10 @@
 # 字库：小号 12px、大号 32px（font_to_py 生成），不内嵌字模。
 
 import utime
+import log
 from machine import I2C
+
+_log = log.getLogger("OLED")
 
 # -----------------------------------------------------------------------------
 # 硬件与 SSD1306 常量
@@ -409,7 +412,7 @@ def init_oled():
         utime.sleep_ms(50)
         return i2c
     except Exception as e:
-        print("oled_display init_oled error:", e)
+        _log.error("oled_display init_oled error: %s" % e)
         return None
 
 
@@ -424,7 +427,7 @@ def clear(i2c, fill=0x00):
         _state_boot = []
         _state_multi["display_mode"] = -1
     except Exception as e:
-        print("oled_display clear error:", e)
+        _log.error("oled_display clear error: %s" % e)
 
 
 def show_boot_message(i2c, msg="Booting..."):
@@ -451,7 +454,7 @@ def show_boot_message(i2c, msg="Booting..."):
                 _fill_rect(i2c, 0, WIDTH - 1, page_start, page_start + SMALL_H_PAGES - 1, 0x00)
                 _draw_string(i2c, page_start, 0, _state_boot[row], font_small)
     except Exception as e:
-        print("oled_display show_boot_message error:", e)
+        _log.error("oled_display show_boot_message error: %s" % e)
 
 
 # 三款界面共用：电池+速度区域不变，内容区为左侧 4 行（标题+3 行数据）
@@ -683,7 +686,7 @@ def update_display(
             line2 = "TU:" + _format_ago_sec_only(traccar_ago_sec)
             try:
                 loc = utime.localtime()
-                line3 = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
+                line3 = "%04d-%02d-%02d %02d:%02d:%02d" % (loc[0], loc[1], loc[2], loc[3], loc[4], loc[5])
             except Exception:
                 line3 = (system_time_str or "--:--:--")
         else:
@@ -756,12 +759,12 @@ def update_display(
     except (OSError, Exception) as e:
         try:
             if not _state_multi.get("oled_error_logged"):
-                print("oled_display update_display I2C error:", e)
+                _log.warning("oled_display update_display I2C error: %s" % e)
                 _state_multi["oled_error_logged"] = True
         except NameError:
             pass
     except Exception as e:
-        print("oled_display update_display error:", e)
+        _log.error("oled_display update_display error: %s" % e)
 
 
 # 主界面状态（增量更新）- 保留给 update_position 兼容
@@ -839,12 +842,12 @@ def update_position(i2c, lat_disp, lon_disp, gnss_type, update_time, time_dif, s
     except (OSError, Exception) as e:
         try:
             if not s.get("oled_error_logged"):
-                print("oled_display: I2C error (screen not connected?):", e)
+                _log.warning("oled_display: I2C error (screen not connected?): %s" % e)
                 s["oled_error_logged"] = True
         except NameError:
-            print("oled_display update_position:", e)
+            _log.warning("oled_display update_position: %s" % e)
     except Exception as e:
-        print("oled_display update_position error:", e)
+        _log.error("oled_display update_position error: %s" % e)
 
 
 # 紧凑布局状态
@@ -874,7 +877,7 @@ def reset_display_compact():
         sc["prev_traccar_ago"] = None
         sc["prev_accuracy"] = None
     except Exception as e:
-        print("oled_display reset_display_compact error:", e)
+        _log.error("oled_display reset_display_compact error: %s" % e)
 
 
 def _draw_compact_static(i2c, title):
@@ -964,9 +967,9 @@ def update_display_compact(
     except (OSError, Exception) as e:
         try:
             if not sc.get("oled_error_logged"):
-                print("oled_display (compact): I2C error:", e)
+                _log.warning("oled_display (compact): I2C error: %s" % e)
                 sc["oled_error_logged"] = True
         except NameError:
-            print("oled_display (compact):", e)
+            _log.warning("oled_display (compact): %s" % e)
     except Exception as e:
-        print("oled_display update_display_compact error:", e)
+        _log.error("oled_display update_display_compact error: %s" % e)

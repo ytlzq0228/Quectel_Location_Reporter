@@ -11,6 +11,9 @@ import utime
 import ujson
 import usocket as socket
 import _thread
+import log
+
+_log = log.getLogger("APRS")
 
 try:
     import config as shared_config
@@ -162,7 +165,7 @@ def send_aprs(cfg, frame_body):
     try:
         addr = socket.getaddrinfo(host, port)[0][-1]
     except Exception as e:
-        print("APRS getaddrinfo error:", e)
+        _log.error("APRS getaddrinfo error: %s" % e)
         return False
 
     s = None
@@ -183,7 +186,7 @@ def send_aprs(cfg, frame_body):
                 break
         return True
     except Exception as e:
-        print("APRS send error:", e)
+        _log.error("APRS send error: %s" % e)
         return False
     finally:
         if s:
@@ -228,12 +231,12 @@ def _backup_loop():
                 for item in L:
                     f.write(ujson.dumps(item) + "\n")
         except Exception as e:
-            print("aprs backup write error:", e)
+            _log.error("aprs backup write error: %s" % e)
         for item in L:
             try:
                 _aprs_queue.put(item)
             except Exception as e:
-                print("aprs backup put back error:", e)
+                _log.error("aprs backup put back error: %s" % e)
 
 
 # ------------------------- 消费者线程：只读队列，RETRY 时改 next_ts 后写回队列 -------------------------
@@ -274,7 +277,7 @@ def _consumer_loop():
         ok = send_aprs(_aprs_cfg, frame_body)
         if ok:
             lat, lon = gps_data.get("lat"), gps_data.get("lon")
-            print("APRS Sent: %.6f %.6f" % (float(lat), float(lon)))
+            _log.info("APRS Sent: %.6f %.6f" % (float(lat), float(lon)))
         else:
             attempts = item.get("attempts", 0) + 1
             backoff = min(APRS_MAX_BACKOFF, attempts * APRS_RETRY_BACKOFF_BASE_SEC)
@@ -283,8 +286,8 @@ def _consumer_loop():
             try:
                 _aprs_queue.put(item)
             except Exception as e:
-                print("aprs retry put back error:", e)
-            print("APRS retry later, backoff", backoff)
+                _log.error("aprs retry put back error: %s" % e)
+            _log.warning("APRS retry later, backoff %s" % backoff)
         utime.sleep(0)
 
 
@@ -295,7 +298,7 @@ def start_consumer(cfg):
     """
     global _aprs_queue, _aprs_cfg
     if Queue is None:
-        print("aprs_report: Queue not available, enqueue will no-op")
+        _log.warning("aprs_report: Queue not available, enqueue will no-op")
         return
     if not (cfg.get("aprs_callsign") or "").strip():
         return
@@ -314,21 +317,21 @@ def start_consumer(cfg):
                         item = ujson.loads(line)
                         _aprs_queue.put(item)
                     except Exception as e:
-                        print("aprs load cache line error:", e)
+                        _log.warning("aprs load cache line error: %s" % e)
         except Exception as e:
-            print("aprs load cache error:", e)
+            _log.warning("aprs load cache error: %s" % e)
 
     try:
         _thread.start_new_thread(_consumer_loop, ())
-        print("APRS consumer thread started")
+        _log.info("APRS consumer thread started")
     except Exception as e:
-        print("APRS start_consumer error:", e)
+        _log.error("APRS start_consumer error: %s" % e)
 
     try:
         _thread.start_new_thread(_backup_loop, ())
-        print("APRS backup thread started")
+        _log.info("APRS backup thread started")
     except Exception as e:
-        print("APRS start_backup error:", e)
+        _log.error("APRS start_backup error: %s" % e)
 
 
 def enqueue(gps_data):
@@ -344,5 +347,5 @@ def enqueue(gps_data):
     try:
         _aprs_queue.put(item)
     except Exception as e:
-        print("aprs enqueue put error:", e)
-    print("APRS Cached: %.6f %.6f" % (float(gps_data.get("lat")), float(gps_data.get("lon"))))
+        _log.error("aprs enqueue put error: %s" % e)
+    _log.info("APRS Cached: %.6f %.6f" % (float(gps_data.get("lat")), float(gps_data.get("lon"))))

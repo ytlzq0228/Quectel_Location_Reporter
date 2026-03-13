@@ -91,7 +91,7 @@ def main():
             aprs_ago_sec = t % 66
             traccar_ago_sec = (t * 2) % 91
             try:
-                loc = utime.localtime(utime.time())
+                loc = utime.localtime()  # 无参：RTC 本地时间；utime.time() 为开机秒数非时间戳
                 system_time_str = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
             except Exception:
                 system_time_str = "%02d:%02d:%02d" % ((t // 3600) % 24, (t // 60) % 60, t % 60)

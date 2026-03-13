@@ -17,49 +17,54 @@ import quecgnss
 import usocket as socket
 import dataCall
 import checkNet
+import ntptime
+import log
 from machine import Pin, WDT
 from misc import PowerKey,Power
+
+log.basicConfig(level=log.INFO)
+_log = log.getLogger("GNSS_Reporter")
 
 try:
     import battery
 except Exception as e:
-    print("battery import failed:", e)
+    _log.warning("battery import failed: %s" % e)
     battery = None
 
 try:
     import cell_info
 except Exception as e:
-    print("cell_info import failed:", e)
+    _log.warning("cell_info import failed: %s" % e)
     cell_info = None
 
 try:
     import cellLocator
 except Exception as e:
-    print("cellLocator import failed:", e)
+    _log.warning("cellLocator import failed: %s" % e)
     cellLocator = None
 
 try:
     import aprs_report
 except Exception as e:
-    print("aprs_report import failed:", e)
+    _log.warning("aprs_report import failed: %s" % e)
     aprs_report = None
 
 try:
     import traccar_report
 except Exception as e:
-    print("traccar_report import failed:", e)
+    _log.warning("traccar_report import failed: %s" % e)
     traccar_report = None
 
 try:
     import config
 except Exception as e:
-    print("config import failed:", e)
+    _log.warning("config import failed: %s" % e)
     config = None
 
 try:
     import oled_display
 except Exception as e:
-    print("oled_display import failed:", e)
+    _log.warning("oled_display import failed: %s" % e)
 
     class _OledStub:
         """无 oled_display 模块时使用，仅保证调用不报错；init_oled 返回 None 表示无屏。"""
@@ -130,7 +135,7 @@ def get_device_id():
         if imei and imei != -1:
             return str(imei)
     except Exception as e:
-        print("getDevImei error:", e)
+        _log.error("getDevImei error: %s" % e)
     return "EC800M"
 
 
@@ -210,7 +215,7 @@ def gnss_read_once():
     for line in text.split("\r\n"):
         if not line or not line.startswith("$"):
             continue
-        if line.startswith("$GNGGA") or line.startswith("$GPGGA") or line.startswith("$BDGGA"):
+        if line.startswith("$") and len(line) >= 6 and line[3:6] == "GGA":
             g = parse_gga(line)
             if g:
                 fix, sats, hdop, alt = g
@@ -225,7 +230,7 @@ def gnss_read_once():
                     gps_data["alt"] = float(alt) if alt else None
                 except Exception:
                     gps_data["alt"] = None
-        elif line.startswith("$GNRMC") or line.startswith("$GPRMC") or line.startswith("$BDRMC"):
+        elif line.startswith("$") and len(line) >= 6 and line[3:6] == "RMC":
             r = parse_rmc(line)
             if r:
                 status, lat, lon, spd_kn, course, date, time_utc = r
@@ -344,9 +349,9 @@ def start_traccar_extra_cache_thread():
     try:
         _traccar_extra_lock = _thread.allocate_lock()
         _thread.start_new_thread(_traccar_extra_cache_loop, ())
-        print("Traccar extra cache thread started")
+        _log.info("Traccar extra cache thread started")
     except Exception as e:
-        print("Traccar extra cache thread start error:", e)
+        _log.warning("Traccar extra cache thread start error: %s" % e)
 
 
 def build_traccar_payload(device_id, lat, lon, gps_data):
@@ -419,7 +424,7 @@ def main():
     global _powerkey_exit_requested, _display_mode
     _powerkey_exit_requested = False
     _display_mode = 0
-    print("GNSS_Reporter starting...")
+    _log.info("GNSS_Reporter starting...")
 
     # 第一时间初始化 OLED 并显示 Booting（无屏或异常时 oled_display 内部静默）
     oled_i2c = oled_display.init_oled()
@@ -430,53 +435,68 @@ def main():
         oled_display.show_boot_message(oled_i2c, str(msg)[:21])
 
     if oled_i2c is not None:
-        print("OLED init ok")
+        _log.info("OLED init ok")
 
     wdt = None  # 供 finally 清理用，初始化阶段 raise 时尚未创建
     try:
         cfg = load_config()
-        print("config:", cfg)
+        _log.debug("config: %s" % cfg)
 
         flash_pin = create_flash_pin(cfg["flash_gpio"])
         if is_flash_mode(flash_pin):
-            print("Flash pin asserted, exit for flash mode.")
+            _log.info("Flash pin asserted, exit for flash mode.")
             oled_status("Flash mode exit")
             raise SystemExit
 
         device_id = get_device_id()
-        print("device_id:", device_id)
+        _log.info("device_id: %s" % device_id)
         oled_status("IMEI:****" + str(device_id)[-6:])
 
-        print("wait network...")
+        _log.info("wait network...")
         oled_status("wait network...")
         stagecode, subcode = checkNet.waitNetworkReady(cfg["network_check_timeout"])
         if stagecode != 3:
-            print("network not ready, exit."+str(stagecode) + "," + str(subcode))
+            _log.error("network not ready, exit. stagecode=%s subcode=%s" % (stagecode, subcode))
             oled_status("net not ready")
             oled_status("net code:" + str(stagecode) + "," + str(subcode))
             raise NeedRestart("network not ready")
-        print("network ready")
+        _log.info("network ready")
         oled_status("network ready")
+
+        try:
+            tz = utime.getTimeZone()
+            ret_ntp = ntptime.settime(timezone=tz, use_rhost=1, timeout=10)
+            if ret_ntp == 0:
+                _log.info("NTP sync ok")
+                oled_status("NTP ok")
+            else:
+                _log.warning("NTP sync failed, ret: %s" % ret_ntp)
+                oled_status("NTP fail")
+        except Exception as e:
+            _log.error("NTP settime: %s" % e)
+            oled_status("NTP err")
 
         try:
             dataCall.getInfo(CID, PROFILE)
             utime.sleep(1)
         except Exception as e:
-            print("dataCall.getInfo:", e)
+            _log.warning("dataCall.getInfo: %s" % e)
             oled_status("dataCall err")
 
         try:
-            quecgnss.configSet(0, 1)
-            quecgnss.configSet(2, 1)
-            quecgnss.configSet(4, 1)
+            quecgnss.configSet(0,1)#设置定位星系为GPS+Beidou
+            quecgnss.configSet(1,3)#只开启GGA+RMC输出
+            quecgnss.configSet(2,1)#打开AGPS
+            quecgnss.configSet(3,1)#使能APFLASH
+            quecgnss.configSet(4,1)#打开备电
         except Exception as e:
-            print("quecgnss configSet:", e)
+            _log.warning("quecgnss configSet: %s" % e)
         ret = quecgnss.init()
         if ret != 0:
-            print("GNSS init failed, ret:", ret)
+            _log.error("GNSS init failed, ret: %s" % ret)
             oled_status("GNSS init failed")
             raise NeedRestart("network not ready")
-        print("GNSS init ok")
+        _log.info("GNSS init ok")
         oled_status("GNSS init ok")
 
         moving_interval = cfg["moving_interval"]
@@ -496,10 +516,10 @@ def main():
         if cfg["wdt_period"] > 0:
             try:
                 wdt = WDT(cfg["wdt_period"])
-                print("WDT started, period %d s" % cfg["wdt_period"])
+                _log.info("WDT started, period %d s" % cfg["wdt_period"])
                 oled_status("WDT %ds" % cfg["wdt_period"])
             except Exception as e:
-                print("WDT init failed:", e)
+                _log.warning("WDT init failed: %s" % e)
                 oled_status("WDT init fail")
 
         last_report_ts = 0
@@ -510,13 +530,13 @@ def main():
         try:
             pk = PowerKey()
             if pk.powerKeyEventRegister(_powerkey_callback) == 0:
-                print("PowerKey: long press >= 3s exit, short press switch display.")
+                _log.info("PowerKey: long press >= 3s exit, short press switch display.")
                 oled_status("PowerKey Register ok")
             else:
-                print("PowerKey register failed.")
+                _log.warning("PowerKey register failed.")
                 oled_status("PowerKey Register fail")
         except Exception as e:
-            print("PowerKey init error:", e)
+            _log.warning("PowerKey init error: %s" % e)
             oled_status("PowerKey Init err")
         oled_display.clear(oled_i2c)
         try:
@@ -533,11 +553,11 @@ def main():
                 try:
                     tick += 1
                     if _powerkey_exit_requested:
-                        print("PowerKey long press, exit.")
+                        _log.info("PowerKey long press, exit.")
                         oled_status("PowerKey exit")
                         break
                     if tick % FLASH_CHECK_INTERVAL_TICKS == 0 and is_flash_mode(flash_pin):
-                        print("Flash pin asserted, exit.")
+                        _log.info("Flash pin asserted, exit.")
                         oled_status("Flash mode exit")
                         break
 
@@ -575,9 +595,10 @@ def main():
                             bat_pct, _ = battery.get_battery()
                         except Exception:
                             pass
+                    # 显示时间用 RTC 本地时间（utime.time() 为开机秒数，仅作程序内计时）
                     try:
-                        loc = utime.localtime(now)
-                        system_time_str = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
+                        loc = utime.localtime()
+                        system_time_str = "%04d-%02d-%02d %02d:%02d:%02d" % (loc[0], loc[1], loc[2], loc[3], loc[4], loc[5])
                     except Exception:
                         system_time_str = "--:--:--"
                     aprs_ago_sec = (now - last_aprs_ts) if last_aprs_ts else None
@@ -629,7 +650,7 @@ def main():
 
                     utime.sleep(1)
                 except Exception as loop_err:
-                    print("main_loop error:", loop_err)
+                    _log.error("main_loop error: %s" % loop_err)
                     oled_status("err:" + str(loop_err)[:17])
                     utime.sleep(2)
         finally:
@@ -644,15 +665,15 @@ def main():
                 quecgnss.gnssEnable(0)
             except Exception:
                 pass
-            print("GNSS_Reporter exit.")
+            _log.info("GNSS_Reporter exit.")
             if _powerkey_exit_requested:
                 Power.powerDown()
     except NeedRestart as e:
-        print("NeedRestart:", e)
+        _log.error("NeedRestart: %s" % e)
         oled_status("PowerRestarting...")
         Power.powerRestart()
     except Exception as e:
-        print("Exception:", e)
+        _log.error("Exception: %s" % e)
         oled_status("Exception:" + str(e)[:17])
     finally:
         oled_status("exit.")
@@ -666,7 +687,7 @@ def main():
             quecgnss.gnssEnable(0)
         except Exception:
             pass
-        print("GNSS_Reporter exit.")
+        _log.info("GNSS_Reporter exit.")
         if _powerkey_exit_requested:
             Power.powerDown()
 
