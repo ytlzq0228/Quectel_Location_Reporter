@@ -481,7 +481,7 @@ def main():
                 _log.info("NTP sync ok")
                 oled_status("NTP ok")
                 loc = utime.localtime()
-                oled_status("%02d%02d%02d %02d:%02d:%02d" % (loc[0], loc[1], loc[2], loc[3], loc[4], loc[5]))
+                oled_status("%04d%02d%02d %02d:%02d" % (loc[0], loc[1], loc[2], loc[3], loc[4]))
             else:
                 _log.warning("NTP sync failed, ret: %s" % ret_ntp)
                 oled_status("NTP fail")
@@ -612,7 +612,8 @@ def main():
                                 gps_data["accuracy"] = lbs_acc
                                 gps_data["_source"] = "LBS"
                                 lat, lon = lbs_lat, lbs_lon
-                    if lat is not None and lon is not None and gps_data.get("_source") != "LBS":
+                    # 有有效位置且 fix 非 0 则为 GNSS；否则已由 LBS 分支设为 LBS
+                    if lat is not None and lon is not None and gps_data.get("fix") != "0":
                         gps_data["_source"] = "GNSS"
                     # OLED 三款界面统一刷新（电池、速度不变；短按电源键切换界面）
                     if lat is not None and lon is not None:
