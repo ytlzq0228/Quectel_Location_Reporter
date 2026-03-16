@@ -447,7 +447,3 @@ def enqueue(payload):
     except Exception as e:
         _log.error("traccar enqueue put error: %s" % e)
         return
-    lat = payload.get("lat")
-    lon = payload.get("lon")
-    if lat is not None and lon is not None:
-        _log.info("Traccar enqueued %.6f %.6f" % (float(lat), float(lon)))
