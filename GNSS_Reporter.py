@@ -49,10 +49,11 @@ except Exception as e:
     _log.warning("aprs_report import failed: %s" % e)
     aprs_report = None
 
+traccar_report_err = None
 try:
     import traccar_report
 except Exception as e:
-    _log.warning("traccar_report import failed: %s" % e)
+    traccar_report_err = e
     traccar_report = None
 
 try:
@@ -91,7 +92,7 @@ except Exception:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
-VERSION = "1.2.3"
+VERSION = "1.3.0"
 
 
 def load_config():
@@ -369,6 +370,7 @@ def build_traccar_payload(device_id, lat, lon, gps_data):
         "lat": "%.7f" % lat,
         "lon": "%.7f" % lon,
         "timestamp": get_utc_timestamp(),
+        "version": VERSION,
     }
     speed = gps_data.get("speed")
     if speed is not None:
@@ -543,9 +545,17 @@ def main():
         still_speed_threshold = cfg["still_speed_threshold"]
 
         traccar_cfg = traccar_report.load_config() if traccar_report else {}
-        if traccar_report and (traccar_cfg.get("traccar_host") or "").strip():
+        if not traccar_report:
+            err_msg = (" (%s)" % traccar_report_err) if traccar_report_err else ""
+            _log.warning("Traccar disabled: module not loaded%s. Check traccar_report.py on device." % err_msg)
+            if traccar_report_err and hasattr(traccar_report_err, "filename") and hasattr(traccar_report_err, "lineno"):
+                _log.warning("Traccar syntax at %s line %s" % (getattr(traccar_report_err, "filename", "?"), getattr(traccar_report_err, "lineno", "?")))
+        elif not (traccar_cfg.get("traccar_host") or "").strip():
+            _log.info("Traccar disabled: traccar_host empty")
+        else:
             traccar_report.start_consumer(traccar_cfg, device_id)
             start_traccar_extra_cache_thread()
+            _log.info("Traccar enabled: %s:%s" % (traccar_cfg.get("traccar_host", ""), traccar_cfg.get("traccar_port", 5055)))
 
         aprs_cfg = aprs_report.load_config() if aprs_report else {}
         last_aprs_ts = 0
@@ -663,6 +673,9 @@ def main():
                         traccar_ago_sec = (now - last_still_report_ts) if last_still_report_ts else None
                     else:
                         traccar_ago_sec = (now - last_report_ts) if last_report_ts else None
+                    # 同步远程 SCREEN OFF/ON（仅内存，重启恢复默认）
+                    if config and getattr(config, "get_screen_on_remote", None):
+                        _screen_off = (config.get_screen_on_remote() == 0)
                     if _screen_off:
                         oled_display.update_display(oled_i2c, 3, 0)
                     elif _in_settings:

@@ -2,9 +2,36 @@
 #
 # 从 config.cfg 读取 key=value，供 GNSS_Reporter 与 aprs_report 使用，避免重复读文件与解析。
 
-CONFIG_PATHS = ("config.cfg", "/usr/config.cfg")
+# 设备上合法路径固定为 /usr/config.cfg（QuecPython 无 writelines，用 write 拼接）
+CONFIG_PATH = "/usr/config.cfg"
+CONFIG_PATHS = (CONFIG_PATH,)
+
+try:
+    import log
+    _log = log.getLogger("Config")
+except Exception:
+    _log = None
 
 APRS_MIN_INTERVAL = 30
+
+# 熄屏状态仅内存，不写文件，重启后恢复默认（屏亮）
+_screen_on_remote = 1  # 1=亮 0=熄
+
+
+def get_screen_on_remote():
+    """远程 SCREEN ON/OFF 状态，仅内存。1=亮 0=熄，重启后为 1。"""
+    return _screen_on_remote
+
+
+def set_screen_on_remote(on):
+    """设置远程熄屏状态（仅内存，不持久化）。on=True 或 1 为亮，否则为熄。"""
+    global _screen_on_remote
+    _screen_on_remote = 1 if on else 0
+
+
+def get_config_path():
+    """返回当前使用的配置文件路径（固定 /usr/config.cfg）。"""
+    return CONFIG_PATH
 
 
 def _int_val(v, default):
@@ -72,3 +99,88 @@ def load_config():
         "aprs_message": cfg.get("aprs_message", "").strip(),
         "aprs_icon": (cfg.get("aprs_icon", ">") or ">")[:1],
     }
+
+
+def get_raw_value(key):
+    """读取配置项原始字符串值，不存在返回 None。"""
+    cfg = _read_raw()
+    return cfg.get(key) if key in cfg else None
+
+
+def get_all_raw():
+    """读取全部 key=value 为字典（供远程 GET ALL 使用）。"""
+    return _read_raw()
+
+
+def set_raw_key(key, value):
+    """设置或新增配置项。写入到 get_config_path() 对应文件。返回 True 成功，False 失败。"""
+    path = get_config_path()
+    try:
+        with open(path, "r") as f:
+            lines = f.readlines()
+    except Exception:
+        lines = []
+    key = key.strip()
+    value = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    found = False
+    new_lines = []
+    for line in lines:
+        if line.strip().startswith("#") or "=" not in line:
+            new_lines.append(line)
+            continue
+        if "=" in line:
+            k, rest = line.split("=", 1)
+        else:
+            k, rest = line, ""
+        if k.strip() == key:
+            new_lines.append(k + "=" + value + "\n")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(key + "=" + value + "\n")
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            f.write("".join(new_lines))
+        return True
+    except Exception as e:
+        if _log:
+            _log.warning("config set_raw_key write %s: %s" % (CONFIG_PATH, e))
+        return False
+
+
+def del_raw_key(key):
+    """删除配置项。禁止删除 traccar_host、traccar_port。返回 (True, 被删掉的值) 或 (False, None)。"""
+    key = (key or "").strip()
+    if key in ("traccar_host", "traccar_port"):
+        return False, None
+    path = get_config_path()
+    try:
+        with open(path, "r") as f:
+            lines = f.readlines()
+    except Exception:
+        return False, None
+    removed = None
+    new_lines = []
+    for line in lines:
+        if line.strip().startswith("#") or "=" not in line:
+            new_lines.append(line)
+            continue
+        if "=" in line:
+            k, rest = line.split("=", 1)
+        else:
+            k, rest = line, ""
+        if k.strip() == key:
+            removed = rest.strip()
+            continue
+        new_lines.append(line)
+    if removed is None:
+        return False, None
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            f.write("".join(new_lines))
+        return True, removed
+    except Exception as e:
+        if _log:
+            _log.warning("config del_raw_key write %s: %s" % (CONFIG_PATH, e))
+        return False, None

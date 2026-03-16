@@ -21,6 +21,7 @@ DOWNLOAD_LIST = [
     {"url": REPO_RAW + "/main.py", "file_name": "/usr/main.py"},
     {"url": REPO_RAW + "/GNSS_Reporter.py", "file_name": "/usr/GNSS_Reporter.py"},
     {"url": REPO_RAW + "/traccar_report.py", "file_name": "/usr/traccar_report.py"},
+    {"url": REPO_RAW + "/cmd_osmand.py", "file_name": "/usr/cmd_osmand.py"},
     {"url": REPO_RAW + "/aprs_report.py", "file_name": "/usr/aprs_report.py"},
     {"url": REPO_RAW + "/battery.py", "file_name": "/usr/battery.py"},
     {"url": REPO_RAW + "/cell_info.py", "file_name": "/usr/cell_info.py"},
