@@ -352,4 +352,3 @@ def enqueue(gps_data):
         _aprs_queue.put(item)
     except Exception as e:
         _log.error("aprs enqueue put error: %s" % e)
-    _log.debug("APRS Cached: %.6f %.6f" % (float(gps_data.get("lat")), float(gps_data.get("lon"))))

@@ -231,13 +231,14 @@ def send_position(host, port, device_id, payload, timeout_s=10):
 
     status, body = _parse_http_response(resp)
     url_short = (path[:120] + "...") if len(path) > 120 else path
-    _log.info("Traccar [REQ] GET %s" % url_short)
     body_len = len(body) if body else 0
-    _log.info("Traccar [RESP] code=%s body(len)=%s" % (status, body_len))
 
     cmd_mod = _get_cmd_osmand()
     execute_fn = getattr(cmd_mod, "execute", None) if cmd_mod else None
     if body and body != "" and cmd_mod and callable(execute_fn):
+        # 仅在有指令时打印发送与响应日志
+        _log.info("Traccar [REQ] GET %s" % url_short)
+        _log.info("Traccar [RESP] code=%s body(len)=%s" % (status, body_len))
         try:
             last_result, need_reboot = execute_fn(body)
         except Exception as e:
@@ -356,11 +357,6 @@ def _consumer_loop():
 
         payload = item.get("payload", {})
         attempts = item.get("attempts", 0)
-        try:
-            lat, lon = payload.get("lat"), payload.get("lon")
-            _log.info("Traccar sending (attempt %s) %.6f %.6f -> %s:%s" % (attempts + 1, float(lat or 0), float(lon or 0), traccar_host, traccar_port))
-        except (TypeError, ValueError):
-            _log.info("Traccar sending (attempt %s) -> %s:%s" % (attempts + 1, traccar_host, traccar_port))
         r = send_position(traccar_host, traccar_port, device_id, payload, traccar_http_timeout)
         need_reboot = _traccar_need_reboot
 

@@ -92,7 +92,7 @@ except Exception:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 
 def load_config():
