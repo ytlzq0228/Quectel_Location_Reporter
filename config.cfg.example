@@ -13,6 +13,8 @@ moving_interval=10
 still_interval=300
 # 速度阈值（km/h），超过则视为运动
 still_speed_threshold=5
+# 静止距离阈值（米），低速但自上次上报移动距离超过该值则强制上报；0 表示关闭
+distance_threshold=5
 
 # APRS 配置 callsign留空则不发送APRS
 aprs_callsign=

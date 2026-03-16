@@ -79,6 +79,7 @@ def load_config():
         "moving_interval": _int_val(cfg.get("moving_interval"), 10),
         "still_interval": _int_val(cfg.get("still_interval"), 300),
         "still_speed_threshold": _int_val(cfg.get("still_speed_threshold"), 5),
+        "distance_threshold": _int_val(cfg.get("distance_threshold"), 0),
         "flash_gpio": _int_val(cfg.get("flash_gpio"), -1),
         "network_check_timeout": _int_val(cfg.get("network_check_timeout"), 60),
         "wdt_period": _int_val(cfg.get("wdt_period"), 60),

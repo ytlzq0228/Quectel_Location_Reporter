@@ -10,6 +10,7 @@ if "/usr" not in sys.path:
     sys.path.insert(0, "/usr")
 
 import utime
+import math
 import uos
 import net
 import modem
@@ -92,7 +93,7 @@ except Exception:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 
 def load_config():
@@ -543,6 +544,7 @@ def main():
         moving_interval = cfg["moving_interval"]
         still_interval = cfg["still_interval"]
         still_speed_threshold = cfg["still_speed_threshold"]
+        distance_threshold = cfg.get("distance_threshold", 0) or 0
 
         traccar_cfg = traccar_report.load_config() if traccar_report else {}
         if not traccar_report:
@@ -574,6 +576,8 @@ def main():
         last_report_ts = 0
         last_still_report_ts = 0
         last_lbs_ts = 0
+        last_report_lat = None
+        last_report_lon = None
         tick = 0
         prev_in_settings = False
         prev_settings_option = -1
@@ -714,12 +718,38 @@ def main():
                             aprs_report.enqueue(gps_data)
                             last_aprs_ts = now
 
-                    # 2) 间隔：速度≤阈值按静止间隔，否则按运动间隔
+                    # 2) 间隔：速度≤阈值按静止间隔，否则按运动间隔；若配置了距离阈值，低速但移动距离超阈值则强制上报一次
                     if now - last_report_ts < moving_interval:
                         utime.sleep(1)
                         continue
                     last_report_ts = now
-                    if speed_kmh <= still_speed_threshold and (now - last_still_report_ts) < still_interval:
+                    force_report_by_distance = False
+                    if (
+                        distance_threshold > 0
+                        and last_report_lat is not None
+                        and last_report_lon is not None
+                    ):
+                        try:
+                            # Haversine 距离（米）
+                            r_earth = 6371000.0
+                            lat1 = math.radians(last_report_lat)
+                            lon1 = math.radians(last_report_lon)
+                            lat2 = math.radians(lat)
+                            lon2 = math.radians(lon)
+                            dlat = lat2 - lat1
+                            dlon = lon2 - lon1
+                            a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+                            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                            distance_m = r_earth * c
+                            if speed_kmh <= still_speed_threshold and distance_m >= distance_threshold:
+                                force_report_by_distance = True
+                        except Exception:
+                            force_report_by_distance = False
+                    if (
+                        not force_report_by_distance
+                        and speed_kmh <= still_speed_threshold
+                        and (now - last_still_report_ts) < still_interval
+                    ):
                         utime.sleep(1)
                         continue
                     last_still_report_ts = now
@@ -728,6 +758,8 @@ def main():
                     payload = build_traccar_payload(device_id, lat, lon, gps_data)
                     if traccar_report:
                         traccar_report.enqueue(payload)
+                    last_report_lat = lat
+                    last_report_lon = lon
 
                     utime.sleep(1)
                 except Exception as loop_err:
