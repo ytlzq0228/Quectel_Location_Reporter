@@ -83,6 +83,7 @@ def load_config():
         "flash_gpio": _int_val(cfg.get("flash_gpio"), -1),
         "network_check_timeout": _int_val(cfg.get("network_check_timeout"), 60),
         "wdt_period": _int_val(cfg.get("wdt_period"), 60),
+        "brightness": max(1, min(100, _int_val(cfg.get("brightness"), 100) or 100)),
         # LBS
         "lbs_server": cfg.get("lbs_server", "").strip(),
         "lbs_port": _int_val(cfg.get("lbs_port"), 80),

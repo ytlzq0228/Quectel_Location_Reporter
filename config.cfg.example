@@ -39,6 +39,8 @@ max_backoff=60
 
 # 看门狗超时（秒），超时未喂狗则重启；0 表示不启用
 wdt_period=60
+# 屏幕亮度 1–100，实际生效 1–100（百分比）；不存在或 0 时默认 100
+brightness=100
 
 # LBS 基站定位参数（lbs_test.py 使用；仅部分模组支持 cellLocator）
 #申请移远LBS token https://portal.iotomp.com/locator_token.html

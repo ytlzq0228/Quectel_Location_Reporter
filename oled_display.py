@@ -1,6 +1,6 @@
 # oled_display.py - SSD1306 128x64 I2C OLED 显示驱动
 #
-# 对外接口：init_oled, clear, show_boot_message, update_display（三款界面）,
+# 对外接口：init_oled, clear, show_boot_message, update_menu_cursor, update_display（三款界面）,
 #          update_position, reset_display_compact, update_display_compact
 # 字库：小号 12px、大号 32px（font_to_py 生成），不内嵌字模。
 
@@ -223,7 +223,7 @@ def _fill_rect(i2c, col_start, col_end, page_start, page_end, fill=0x00):
     _write_data(i2c, bytearray([fill] * (w * h)))
 
 
-def _ssd1306_init(i2c):
+def _ssd1306_init(i2c, contrast=0xCF):
     _cmd(i2c, 0xAE)
     _cmd(i2c, 0xD5, 0x80)
     _cmd(i2c, 0xA8, 0x3F)
@@ -234,7 +234,7 @@ def _ssd1306_init(i2c):
     _cmd(i2c, 0xA1)
     _cmd(i2c, 0xC8)
     _cmd(i2c, 0xDA, 0x12)
-    _cmd(i2c, 0x81, 0xCF)
+    _cmd(i2c, 0x81, contrast)
     _cmd(i2c, 0xD9, 0xF1)
     _cmd(i2c, 0xDB, 0x40)
     _cmd(i2c, 0xA4)
@@ -408,12 +408,24 @@ def init_oled():
     try:
         i2c = I2C(I2C_PORT, I2C_MODE)
         utime.sleep_ms(50)
-        _ssd1306_init(i2c)
+        _ssd1306_init(i2c, 0xCF)
         utime.sleep_ms(50)
         return i2c
     except Exception as e:
         _log.error("oled_display init_oled error: %s" % e)
         return None
+
+
+def set_brightness(i2c, percent):
+    """设置屏幕亮度/对比度，有效值 1–100；超出范围按 1/100 钳位。"""
+    if i2c is None:
+        return
+    try:
+        pct = max(1, min(100, int(percent) if percent is not None else 100))
+        contrast = (pct * 255) // 100
+        _cmd(i2c, 0x81, contrast)
+    except Exception as e:
+        _log.error("oled_display set_brightness error: %s" % e)
 
 
 def clear(i2c, fill=0x00):
@@ -455,6 +467,21 @@ def show_boot_message(i2c, msg="Booting..."):
                 _draw_string(i2c, page_start, 0, _state_boot[row], font_small)
     except Exception as e:
         _log.error("oled_display show_boot_message error: %s" % e)
+
+
+def update_menu_cursor(i2c, prev_row, new_row):
+    """仅刷新菜单行首的 '>' 位置：在 prev_row 行清空并写 '  '，在 new_row 行清空并写 '> '。其他字符不刷新。"""
+    if i2c is None or prev_row == new_row:
+        return
+    try:
+        w = max(_measure_number_cols("  ", font_small), _measure_number_cols("> ", font_small))
+        col_end = min(w - 1, WIDTH - 1)
+        for r, prefix in ((prev_row, "  "), (new_row, "> ")):
+            page_start = r * SMALL_H_PAGES
+            _fill_rect(i2c, 0, col_end, page_start, page_start + SMALL_H_PAGES - 1, 0x00)
+            _draw_string(i2c, page_start, 0, prefix, font_small)
+    except Exception as e:
+        _log.error("oled_display update_menu_cursor error: %s" % e)
 
 
 # 三款界面共用：电池+速度区域不变，内容区为左侧 4 行（标题+3 行数据）
