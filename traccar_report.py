@@ -237,7 +237,7 @@ def send_position(host, port, device_id, payload, timeout_s=10):
     execute_fn = getattr(cmd_mod, "execute", None) if cmd_mod else None
     if body and body != "" and cmd_mod and callable(execute_fn):
         # 仅在有指令时打印发送与响应日志
-        _log.info("Traccar [REQ] GET %s" % url_short)
+        #_log.info("Traccar [REQ] GET %s" % url_short)
         _log.info("Traccar [RESP] code=%s body(len)=%s" % (status, body_len))
         try:
             last_result, need_reboot = execute_fn(body)
