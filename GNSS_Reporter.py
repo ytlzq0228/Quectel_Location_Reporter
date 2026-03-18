@@ -438,6 +438,8 @@ def _powerkey_callback(status):
                 if _settings_option == 0:
                     _screen_off = True
                     _in_settings = False
+                    if config and getattr(config, "set_screen_on_remote", None):
+                        config.set_screen_on_remote(0)
                 elif _settings_option == 1:
                     _powerkey_exit_requested = True
                 else:
