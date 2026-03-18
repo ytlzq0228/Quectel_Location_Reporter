@@ -759,6 +759,7 @@ def main():
                     if (
                         not force_report_by_distance
                         and speed_kmh <= still_speed_threshold
+                        and last_still_report_ts != 0
                         and (now - last_still_report_ts) < still_interval
                     ):
                         utime.sleep(1)
