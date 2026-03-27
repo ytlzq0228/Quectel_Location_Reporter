@@ -93,7 +93,7 @@ except Exception:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
-VERSION = "1.3.3"
+VERSION = "1.3.4"
 
 
 def load_config():
@@ -404,7 +404,7 @@ def build_traccar_payload(device_id, lat, lon, gps_data):
     return payload
 
 
-# PowerKey：仅短按/长按，长按阈值 800ms；短按轮播信息页或设置项，长按进设置或确定
+# PowerKey：仅短按/长按，长按阈值 1500ms；短按轮播信息页或设置项，长按进设置或确定
 _powerkey_exit_requested = False
 _powerkey_fota_requested = False
 _powerkey_press_ts = None
@@ -412,7 +412,7 @@ _display_mode = 0       # 0/1/2 三个信息页
 _in_settings = False   # 是否在设置页
 _settings_option = 0   # 设置项 0=熄屏 1=关机 2=FOTA
 _screen_off = False    # 熄屏后为 True，短按恢复
-LONG_PRESS_MS = 800
+LONG_PRESS_MS = 1500
 SHORT_PRESS_MIN_MS = 50
 
 SETTINGS_OPTIONS = ("Screen off", "Power off", "FOTA")
@@ -430,16 +430,11 @@ def _powerkey_callback(status):
             pass
         elif _screen_off:
             _screen_off = False
-            # 按键恢复亮屏时同步远程状态，避免主循环再次把 _screen_off 置为 True
-            if config and getattr(config, "set_screen_on_remote", None):
-                config.set_screen_on_remote(1)
         elif _in_settings:
             if duration >= LONG_PRESS_MS:
                 if _settings_option == 0:
                     _screen_off = True
                     _in_settings = False
-                    if config and getattr(config, "set_screen_on_remote", None):
-                        config.set_screen_on_remote(0)
                 elif _settings_option == 1:
                     _powerkey_exit_requested = True
                 else:
@@ -487,8 +482,6 @@ def main():
     try:
         cfg = load_config()
         _log.debug("config: %s" % cfg)
-        if oled_i2c is not None:
-            oled_display.set_brightness(oled_i2c, cfg.get("brightness", 100))
 
         flash_pin = create_flash_pin(cfg["flash_gpio"])
         if is_flash_mode(flash_pin):
@@ -593,7 +586,7 @@ def main():
         try:
             pk = PowerKey()
             if pk.powerKeyEventRegister(_powerkey_callback) == 0:
-                _log.info("PowerKey: short=cycle, long=settings/confirm, 800ms.")
+                _log.info("PowerKey: short=cycle, long=settings/confirm, 1500ms.")
                 oled_status("PowerKey Register ok")
             else:
                 _log.warning("PowerKey register failed.")
@@ -692,13 +685,11 @@ def main():
                     if _screen_off:
                         oled_display.update_display(oled_i2c, 3, 0)
                     elif _in_settings:
-                        if not prev_in_settings:
+                        if not prev_in_settings or prev_settings_option != _settings_option:
                             oled_display.clear(oled_i2c)
                             for i in range(3):
                                 line = ("> " if i == _settings_option else "  ") + SETTINGS_OPTIONS[i]
                                 oled_display.show_boot_message(oled_i2c, line)
-                        elif prev_settings_option != _settings_option:
-                            oled_display.update_menu_cursor(oled_i2c, prev_settings_option, _settings_option)
                         prev_in_settings = True
                         prev_settings_option = _settings_option
                     else:
@@ -795,7 +786,7 @@ def main():
                 Power.powerDown()
     except NeedRestart as e:
         _log.error("NeedRestart: %s" % e)
-        oled_status("NeedRestart -> PowerDown")
+        oled_status("PowerDown")
         shutdown_requested = True
     except Exception as e:
         _log.error("Exception: %s" % e)
