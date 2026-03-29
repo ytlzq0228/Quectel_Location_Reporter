@@ -94,6 +94,77 @@ CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
 VERSION = "1.3.4"
+STATUS_LED_GPIO = 44  # EC800M/EG810M: GPIO44 -> 引脚25
+
+
+class StatusLed:
+    """状态灯控制：boot 慢闪、run 心跳闪、error 快闪。"""
+    MODE_OFF = "off"
+    MODE_BOOT = "boot"
+    MODE_RUN = "run"
+    MODE_ERROR = "error"
+
+    def __init__(self, gpio_num):
+        self._pin = None
+        self._mode = self.MODE_OFF
+        self._state = 0
+        self._next_toggle_ms = 0
+        try:
+            self._pin = Pin(gpio_num, Pin.OUT, Pin.PULL_DISABLE, 0)
+        except Exception as e:
+            _log.warning("STATUS LED init failed on GPIO%s: %s" % (gpio_num, e))
+            self._pin = None
+
+    def _write(self, value):
+        if self._pin is None:
+            return
+        try:
+            self._pin.write(1 if value else 0)
+            self._state = 1 if value else 0
+        except Exception:
+            pass
+
+    def set_mode(self, mode):
+        self._mode = mode
+        now = utime.ticks_ms()
+        if mode == self.MODE_OFF:
+            self._write(0)
+            return
+        if mode == self.MODE_RUN:
+            # 运行态：心跳闪（短亮一次后长灭）
+            self._write(1)
+            self._next_toggle_ms = utime.ticks_add(now, 100)
+            return
+        # boot/error 都从灭灯开始，确保模式切换时节奏一致
+        self._write(0)
+        self._next_toggle_ms = utime.ticks_add(now, 100)
+
+    def tick(self):
+        if self._pin is None or self._mode == self.MODE_OFF:
+            return
+        now = utime.ticks_ms()
+        if utime.ticks_diff(now, self._next_toggle_ms) < 0:
+            return
+        if self._mode == self.MODE_BOOT:
+            # 启动态：慢闪 200ms 亮 / 800ms 灭
+            next_state = 0 if self._state else 1
+            self._write(next_state)
+            delay = 200 if next_state else 800
+            self._next_toggle_ms = utime.ticks_add(now, delay)
+        elif self._mode == self.MODE_RUN:
+            # 运行态：心跳 100ms 亮 / 1900ms 灭
+            next_state = 0 if self._state else 1
+            self._write(next_state)
+            delay = 100 if next_state else 1900
+            self._next_toggle_ms = utime.ticks_add(now, delay)
+        elif self._mode == self.MODE_ERROR:
+            # 异常态：快闪 200ms 亮 / 200ms 灭
+            next_state = 0 if self._state else 1
+            self._write(next_state)
+            self._next_toggle_ms = utime.ticks_add(now, 200)
+
+    def off(self):
+        self.set_mode(self.MODE_OFF)
 
 
 def load_config():
@@ -411,29 +482,51 @@ _powerkey_press_ts = None
 _display_mode = 0       # 0/1/2 三个信息页
 _in_settings = False   # 是否在设置页
 _settings_option = 0   # 设置项 0=熄屏 1=关机 2=FOTA
-_screen_off = False    # 熄屏后为 True，短按恢复
+# config 不可用时用本地标志；正常时用 config.get/set_screen_on_remote（与远程指令一致）
+_screen_off_local = False
 LONG_PRESS_MS = 1500
 SHORT_PRESS_MIN_MS = 50
 
 SETTINGS_OPTIONS = ("Screen off", "Power off", "FOTA")
 
 
+def _is_screen_off():
+    if config is not None and getattr(config, "get_screen_on_remote", None):
+        try:
+            return config.get_screen_on_remote() == 0
+        except Exception:
+            pass
+    return _screen_off_local
+
+
+def _set_screen_power_off(off):
+    """off=True 熄屏，False 亮屏。与 cmd_osmand 远程 SCREEN OFF/ON 共用内存状态。"""
+    global _screen_off_local
+    if config is not None and getattr(config, "set_screen_on_remote", None):
+        try:
+            config.set_screen_on_remote(0 if off else 1)
+            return
+        except Exception:
+            pass
+    _screen_off_local = off
+
+
 def _powerkey_callback(status):
     """短按：信息页轮播(3 页)或设置项切换；长按：进设置或确定当前选项。熄屏后仅短按恢复。"""
     global _powerkey_exit_requested, _powerkey_fota_requested, _powerkey_press_ts
-    global _display_mode, _in_settings, _settings_option, _screen_off
+    global _display_mode, _in_settings, _settings_option
     if status == 1:
         _powerkey_press_ts = utime.ticks_ms()
     elif status == 0 and _powerkey_press_ts is not None:
         duration = utime.ticks_diff(utime.ticks_ms(), _powerkey_press_ts)
         if duration < SHORT_PRESS_MIN_MS:
             pass
-        elif _screen_off:
-            _screen_off = False
+        elif _is_screen_off():
+            _set_screen_power_off(False)
         elif _in_settings:
             if duration >= LONG_PRESS_MS:
                 if _settings_option == 0:
-                    _screen_off = True
+                    _set_screen_power_off(True)
                     _in_settings = False
                 elif _settings_option == 1:
                     _powerkey_exit_requested = True
@@ -456,15 +549,17 @@ class NeedRestart(Exception):
 # ------------------------- 主流程 -------------------------
 def main():
     global _powerkey_exit_requested, _powerkey_fota_requested, _display_mode
-    global _in_settings, _settings_option, _screen_off
+    global _in_settings, _settings_option, _screen_off_local
     _powerkey_exit_requested = False
     _powerkey_fota_requested = False
     _display_mode = 0
     _in_settings = False
     _settings_option = 0
-    _screen_off = False
+    _screen_off_local = False
     _log.info("GNSS_Reporter starting...")
     _log.info("Version: %s" % VERSION)
+    status_led = StatusLed(STATUS_LED_GPIO)
+    status_led.set_mode(StatusLed.MODE_BOOT)
     # 第一时间初始化 OLED 并显示 Booting（无屏或异常时 oled_display 内部静默）
     oled_i2c = oled_display.init_oled()
     oled_display.show_boot_message(oled_i2c, "Booting...")
@@ -503,6 +598,7 @@ def main():
             raise NeedRestart("network not ready")
         _log.info("network ready")
         oled_status("network ready")
+        status_led.set_mode(StatusLed.MODE_RUN)
 
         try:
             tz = utime.getTimeZone()
@@ -598,6 +694,7 @@ def main():
         try:
             while True:
                 try:
+                    status_led.tick()
                     now = utime.time()
                 except Exception:
                     now = 0
@@ -679,10 +776,7 @@ def main():
                         traccar_ago_sec = (now - last_still_report_ts) if last_still_report_ts else None
                     else:
                         traccar_ago_sec = (now - last_report_ts) if last_report_ts else None
-                    # 同步远程 SCREEN OFF/ON（仅内存，重启恢复默认）
-                    if config and getattr(config, "get_screen_on_remote", None):
-                        _screen_off = (config.get_screen_on_remote() == 0)
-                    if _screen_off:
+                    if _is_screen_off():
                         oled_display.update_display(oled_i2c, 3, 0)
                     elif _in_settings:
                         if not prev_in_settings or prev_settings_option != _settings_option:
@@ -770,7 +864,13 @@ def main():
                     oled_status("err:" + str(loop_err)[:17])
                     utime.sleep(2)
         finally:
+            status_led.off()
             oled_status("exit.")
+            # SSD1327 整帧 SPI 刷新后立刻 clear 会马上黑屏，肉眼像「从未亮过」
+            try:
+                utime.sleep_ms(500)
+            except Exception:
+                pass
             oled_display.clear(oled_i2c)
             if wdt:
                 try:
@@ -785,14 +885,21 @@ def main():
             if _powerkey_exit_requested or shutdown_requested:
                 Power.powerDown()
     except NeedRestart as e:
+        status_led.set_mode(StatusLed.MODE_ERROR)
         _log.error("NeedRestart: %s" % e)
         oled_status("PowerDown")
         shutdown_requested = True
     except Exception as e:
+        status_led.set_mode(StatusLed.MODE_ERROR)
         _log.error("Exception: %s" % e)
         oled_status("Exception:" + str(e)[:17])
     finally:
+        status_led.off()
         oled_status("exit.")
+        try:
+            utime.sleep_ms(500)
+        except Exception:
+            pass
         oled_display.clear(oled_i2c)
         if wdt:
             try:

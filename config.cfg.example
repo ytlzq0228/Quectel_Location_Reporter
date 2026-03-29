@@ -42,6 +42,20 @@ wdt_period=60
 # 屏幕亮度 1–100，实际生效 1–100（百分比）；不存在或 0 时默认 100
 brightness=100
 
+# OLED：ssd1306（默认 I2C 128x64）或 ssd1327（SPI 128x128）
+#oled_type=ssd1306
+#oled_spi_port=0
+#oled_spi_mode=0
+#oled_spi_clk=4
+#oled_spi_group=1
+#oled_gpio_rst=5
+#oled_gpio_dc=7
+#oled_gpio_cs=8
+# SSD1327 外部 VPP(12V) 升压使能（高=开），与模组逻辑供电无关；默认 GPIO20；-1 表示不控制
+#oled_boost_gpio=20
+#oled_ssd1327_remap=0x51
+#oled_function_sel_a=0
+
 # LBS 基站定位参数（lbs_test.py 使用；仅部分模组支持 cellLocator）
 #申请移远LBS token https://portal.iotomp.com/locator_token.html
 lbs_token=5Fv*********vs
