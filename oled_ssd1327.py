@@ -22,8 +22,7 @@ WIDTH = 128
 HEIGHT = 128
 COL_BYTES = WIDTH // 2
 FRAME_BYTES = COL_BYTES * HEIGHT
-CHUNK = 256
-# 物理高度 128px = 16 页（每页 8px）。布局在 64px 方案基础上增加行间留白页。
+CHUNK = 8192
 PAGES = 16
 
 spi = None
@@ -34,6 +33,66 @@ pin_boost = None  # VPP(12V) 升压使能，与 VCI/VDD 逻辑供电独立；高
 _boost_power_cut = False
 _fb = None
 _fb_ok = False
+_spi_timing_debug = False
+_spi_timing_verbose = False
+_prepare_debug = False  # update_display 内 prepare 分段 ms（oled_prepare_debug）
+_spi_dbg_fb = None  # 上次 _write_framebuffer：(setup_us, data_us, span_us, nbytes, chunks)
+_HAS_TICKS_US = hasattr(utime, "ticks_us")
+
+# (id(font), ch) -> (bytearray 列主序缓冲, 字宽 w, h_pages)；避免每次绘制都跑 glyph_to_column_major
+_col_major_cache = {}
+
+# init_oled 时预热；缺字时 _get_col_major_buf 仍会懒填充
+_GLYPH_WARM_CHARS = (
+    "0123456789 "
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    ":,.-/_+\"'()[]<>?=*#@%!&"
+    ">"
+)
+
+
+def _get_col_major_buf(font, ch):
+    """返回 (buf, w, h_pages)；buf 为 glyph_to_column_major 结果，按 (font, 单字) 缓存。"""
+    if not ch:
+        return None
+    ch = ch[0]
+    key = (id(font), ch)
+    ent = _col_major_cache.get(key)
+    if ent is not None:
+        return ent
+    try:
+        glyph, h, w = font.get_ch(ch)
+    except Exception:
+        if ch == "?":
+            return None
+        ent = _get_col_major_buf(font, "?")
+        if ent is None:
+            return None
+        _col_major_cache[key] = ent
+        return ent
+    buf = glyph_to_column_major(glyph, w, h)
+    h_pages = (h + 7) // 8
+    ent = (buf, w, h_pages)
+    _col_major_cache[key] = ent
+    return ent
+
+
+def _warm_col_major_cache_at_boot():
+    """SSD1327 初始化成功后调用：常用字符列主序转好放内存，首帧绘制不再转换。"""
+    for fnt in (font_small, font_large):
+        for ch in _GLYPH_WARM_CHARS:
+            try:
+                _get_col_major_buf(fnt, ch)
+            except Exception:
+                pass
+        try:
+            _get_col_major_buf(fnt, "?")
+        except Exception:
+            pass
+    try:
+        _log.info("oled_ssd1327: glyph col-major cache keys=%d" % len(_col_major_cache))
+    except Exception:
+        pass
 
 DEFAULT_REMAP = 0x51
 DEFAULT_FUNCTION_SEL_A = 0x00
@@ -42,6 +101,52 @@ DEFAULT_FUNCTION_SEL_A = 0x00
 def _gray_byte(gray4):
     g = gray4 & 0x0F
     return (g << 4) | g
+
+
+def _time_start():
+    return utime.ticks_us() if _HAS_TICKS_US else utime.ticks_ms()
+
+
+def _time_diff(start):
+    if _HAS_TICKS_US:
+        return utime.ticks_diff(utime.ticks_us(), start), "us"
+    return utime.ticks_diff(utime.ticks_ms(), start), "ms"
+
+
+def _time_start_ms():
+    """构图/清屏等可能 >32ms，勿用 ticks_us（部分平台 16 位会回绕导致 prepare 假大）。"""
+    return utime.ticks_ms()
+
+
+def _time_diff_ms(start_ms):
+    return utime.ticks_diff(utime.ticks_ms(), start_ms)
+
+
+def _fb_fill_uniform(byte_v):
+    """整帧填充同一字节（仅改内存，不送屏）。切页时用其替代 clear+flush，避免双次全帧 SPI。
+    按行 + 8 字节展开，减少 Python 层循环次数（原 8192 次单索引迭代在部分固件上要数百 ms～1s+）。"""
+    b = byte_v & 0xFF
+    fb = _fb
+    stride = COL_BYTES
+    yy = 0
+    while yy < HEIGHT:
+        base = yy * stride
+        j = 0
+        while j + 8 <= stride:
+            o = base + j
+            fb[o] = b
+            fb[o + 1] = b
+            fb[o + 2] = b
+            fb[o + 3] = b
+            fb[o + 4] = b
+            fb[o + 5] = b
+            fb[o + 6] = b
+            fb[o + 7] = b
+            j += 8
+        while j < stride:
+            fb[base + j] = b
+            j += 1
+        yy += 1
 
 
 def _spi_write(buf):
@@ -53,7 +158,12 @@ def _spi_write(buf):
     n = len(buf)
     if n == 0:
         return
+    if _spi_timing_debug and _spi_timing_verbose:
+        t0 = _time_start()
     ret = spi.write(buf, n)
+    if _spi_timing_debug and _spi_timing_verbose:
+        dt, unit = _time_diff(t0)
+        _log.info("ssd1327 SPI write n=%d %s=%d" % (n, unit, dt))
     if ret == 0:
         return
     raise OSError("spi.write failed ret=%s" % ret)
@@ -89,17 +199,32 @@ def _set_window_full_in_cs():
 
 
 def _write_framebuffer(fb):
+    global _spi_dbg_fb
     if len(fb) != FRAME_BYTES:
         raise ValueError("frame size")
-    pin_cs.write(0)
-    _set_window_full_in_cs()
     n = len(fb)
     off = 0
+    chunks = 0
+    if _spi_timing_debug:
+        t_fb = _time_start()
+    pin_cs.write(0)
+    if _spi_timing_debug:
+        t_setup = _time_start()
+    _set_window_full_in_cs()
+    if _spi_timing_debug:
+        setup_us, u_s = _time_diff(t_setup)
+        t_data = _time_start()
     while off < n:
         end = min(off + CHUNK, n)
         _spi_write(fb[off:end])
+        chunks += 1
         off = end
+    if _spi_timing_debug:
+        data_us, u_d = _time_diff(t_data)
     pin_cs.write(1)
+    if _spi_timing_debug:
+        total_us, u_t = _time_diff(t_fb)
+        _spi_dbg_fb = (setup_us, data_us, total_us, n, chunks)
 
 
 def _reset_panel():
@@ -150,14 +275,30 @@ def fb_put_pixel(fb, x, y, gray4):
 
 
 def fb_fill_rect(fb, x0, y0, w, h, gray4):
+    """按行写字节，避免逐像素 fb_put_pixel（boot/清行快一个数量级）。"""
     g = gray4 & 0x0F
+    pair_b = (g << 4) | g
     x1 = min(x0 + w, WIDTH)
     y1 = min(y0 + h, HEIGHT)
     x0 = max(x0, 0)
     y0 = max(y0, 0)
+    if x0 >= x1 or y0 >= y1:
+        return
     for yy in range(y0, y1):
-        for xx in range(x0, x1):
-            fb_put_pixel(fb, xx, yy, g)
+        row = yy * COL_BYTES
+        x = x0
+        while x < x1:
+            bi = row + (x >> 1)
+            if (x & 1) == 0 and (x + 1) < x1:
+                fb[bi] = pair_b
+                x += 2
+            else:
+                bb = fb[bi]
+                if (x & 1) == 0:
+                    fb[bi] = (g << 4) | (bb & 0x0F)
+                else:
+                    fb[bi] = (bb & 0xF0) | g
+                x += 1
 
 
 def _fb_fill_rect_pages(fb, col_start, col_end, page_start, page_end, fill_byte):
@@ -169,28 +310,47 @@ def _fb_fill_rect_pages(fb, col_start, col_end, page_start, page_end, fill_byte)
 
 
 def fb_blit_column_major(fb, col_px, y_top, buf, cols, h_pages, fg=0x0F, bg=0x00):
+    """列主序 1bpp → SSD1327 4bpp 交错 nibbles。热点路径内联写 _fb，避免逐像素 fb_put_pixel 调用。"""
     fg &= 0x0F
     bg &= 0x0F
+    rs = COL_BYTES
+    y_lim = HEIGHT
     for c in range(cols):
+        x = col_px + c
+        if x < 0 or x >= WIDTH:
+            continue
+        xi = x >> 1
+        x_odd = x & 1
         for p in range(h_pages):
             b = buf[p * cols + c]
+            y0 = y_top + (p << 3)
+            if y0 >= y_lim:
+                break
+            base = y0 * rs + xi
             for bit in range(8):
-                x = col_px + c
-                y = y_top + p * 8 + bit
-                fb_put_pixel(fb, x, y, fg if ((b >> bit) & 1) else bg)
+                y = y0 + bit
+                if y < 0:
+                    continue
+                if y >= y_lim:
+                    break
+                g = fg if (b >> bit) & 1 else bg
+                idx = base + bit * rs
+                bb = fb[idx]
+                if x_odd:
+                    fb[idx] = (bb & 0xF0) | g
+                else:
+                    fb[idx] = (g << 4) | (bb & 0x0F)
 
 
 def _draw_char(page, col, ch, font):
-    try:
-        glyph, h, w = font.get_ch(ch)
-    except Exception:
+    ent = _get_col_major_buf(font, ch)
+    if ent is None:
         try:
-            glyph, h, w = font.get_ch("?")
-        except Exception:
             return font.max_width() + 1
-    buf = glyph_to_column_major(glyph, w, h)
+        except Exception:
+            return 1
+    buf, w, h_pages = ent
     cols = w + 1
-    h_pages = (h + 7) // 8
     y_top = page * 8
     fb_blit_column_major(_fb, col, y_top, buf, cols, h_pages, 0x0F, 0x00)
     return w + 1
@@ -458,8 +618,11 @@ def _power_restore_vpp_and_display_on():
 def init_oled(oled_cfg=None):
     """初始化 SPI 与 SSD1327；成功返回 True，失败返回 None。oled_cfg 为 dict（来自配置文件）。"""
     global spi, pin_dc, pin_cs, pin_rst, pin_boost, _fb, _fb_ok
-    global _boost_power_cut
+    global _boost_power_cut, _spi_timing_debug, _spi_timing_verbose, _prepare_debug
     cfg = oled_cfg or {}
+    _spi_timing_debug = _cfg_int(cfg, "spi_timing_debug", 0) != 0
+    _spi_timing_verbose = _cfg_int(cfg, "spi_timing_verbose", 0) != 0
+    _prepare_debug = _cfg_int(cfg, "prepare_debug", 0) != 0
     try:
         boost_gpio = _cfg_int(cfg, "boost_gpio", 20)
         if boost_gpio < 0:
@@ -492,8 +655,17 @@ def init_oled(oled_cfg=None):
         # 上电后必须把整帧写入 GRAM，否则部分屏一直黑/花屏（单独跑 test 时 write_patterns 会写屏）
         try:
             _write_framebuffer(_fb)
+            if _spi_timing_debug and _spi_dbg_fb is not None:
+                su, du, tu, bn, ch = _spi_dbg_fb
+                _log.info(
+                    "ssd1327 init_fb span_us=%d setup_us=%d data_us=%d bytes=%d chunks=%d"
+                    % (tu, su, du, bn, ch)
+                )
         except Exception as e:
             _log.warning("oled_ssd1327: initial framebuffer push: %s" % e)
+        _warm_col_major_cache_at_boot()
+        if _prepare_debug:
+            _log.info("oled_ssd1327: prepare_debug=1 (OLED_prepare detail lines enabled)")
         return True
     except Exception as e:
         _log.error("oled_ssd1327 init_oled error: %s" % e)
@@ -516,16 +688,41 @@ def _alive(ctx):
     return ctx is not None and _fb_ok and _fb is not None
 
 
-def _flush():
+def _flush(compose_prepare_ms=None):
+    """compose_prepare_ms：进入 _flush 前 Python 构图/写 _fb 耗时（ms，ticks_ms），仅排障。"""
     if _fb is not None and _fb_ok:
+        a4_us = 0
+        if _spi_timing_debug:
+            t_flush = _time_start()
         if _boost_power_cut:
             _power_restore_vpp_and_display_on()
         # 避免被其它命令切到 A5 整屏测模式后 GRAM 不刷新
+        if _spi_timing_debug:
+            t_a4 = _time_start()
         try:
             _write_cmd(0xA4)
         except Exception:
             pass
+        if _spi_timing_debug:
+            a4_us, _ = _time_diff(t_a4)
         _write_framebuffer(_fb)
+        if _spi_timing_debug:
+            flush_wall_us, _ = _time_diff(t_flush)
+            fb = _spi_dbg_fb
+            if fb:
+                su, du, tu, bn, ch = fb
+            else:
+                su = du = tu = bn = ch = 0
+            if compose_prepare_ms is not None:
+                _log.info(
+                    "ssd1327 refresh prepare_ms=%d spi_wall_us=%d a4_us=%d fb_setup_us=%d fb_data_us=%d fb_span_us=%d bytes=%d chunks=%d"
+                    % (compose_prepare_ms, flush_wall_us, a4_us, su, du, tu, bn, ch)
+                )
+            else:
+                _log.info(
+                    "ssd1327 refresh spi_wall_us=%d a4_us=%d fb_setup_us=%d fb_data_us=%d fb_span_us=%d bytes=%d chunks=%d"
+                    % (flush_wall_us, a4_us, su, du, tu, bn, ch)
+                )
 
 
 def set_brightness(ctx, percent):
@@ -546,10 +743,13 @@ def clear(ctx, fill=0x00):
     if not _alive(ctx):
         return
     try:
-        v = _gray_byte(0x0F if fill else 0x00)
-        for i in range(FRAME_BYTES):
-            _fb[i] = v
-        _flush()
+        prep_ms = None
+        if _spi_timing_debug:
+            t_prep_ms = _time_start_ms()
+        _fb_fill_uniform(_gray_byte(0x0F if fill else 0x00))
+        if _spi_timing_debug:
+            prep_ms = _time_diff_ms(t_prep_ms)
+        _flush(compose_prepare_ms=prep_ms)
         _state_boot = []
         _state_multi["display_mode"] = -1
     except Exception as e:
@@ -561,6 +761,9 @@ def show_boot_message(ctx, msg="Booting..."):
     if not _alive(ctx):
         return
     try:
+        prep_ms = None
+        if _spi_timing_debug:
+            t_prep_ms = _time_start_ms()
         line = str(msg)[:BOOT_CHARS_PER_LINE]
         n = len(_state_boot)
         if n < BOOT_MAX_LINES:
@@ -578,7 +781,9 @@ def show_boot_message(ctx, msg="Booting..."):
                 page_start = row * SMALL_H_PAGES
                 _fb_fill_rect_pages(_fb, 0, WIDTH - 1, page_start, page_start + SMALL_H_PAGES - 1, 0x00)
                 _draw_string(page_start, 0, _state_boot[row], font_small)
-        _flush()
+        if _spi_timing_debug:
+            prep_ms = _time_diff_ms(t_prep_ms)
+        _flush(compose_prepare_ms=prep_ms)
     except Exception as e:
         _log.error("oled_ssd1327 show_boot_message error: %s" % e)
 
@@ -587,13 +792,18 @@ def update_menu_cursor(ctx, prev_row, new_row):
     if not _alive(ctx) or prev_row == new_row:
         return
     try:
+        prep_ms = None
+        if _spi_timing_debug:
+            t_prep_ms = _time_start_ms()
         w = max(_measure_number_cols("  ", font_small), _measure_number_cols("> ", font_small))
         col_end = min(w - 1, WIDTH - 1)
         for r, prefix in ((prev_row, "  "), (new_row, "> ")):
             page_start = r * SMALL_H_PAGES
             _fb_fill_rect_pages(_fb, 0, col_end, page_start, page_start + SMALL_H_PAGES - 1, 0x00)
             _draw_string(page_start, 0, prefix, font_small)
-        _flush()
+        if _spi_timing_debug:
+            prep_ms = _time_diff_ms(t_prep_ms)
+        _flush(compose_prepare_ms=prep_ms)
     except Exception as e:
         _log.error("oled_ssd1327 update_menu_cursor error: %s" % e)
 
@@ -629,18 +839,41 @@ def update_display(
                 sm["display_mode"] = 3
             return
 
+        prep_ms = None
+        t0_prep = None
+        t_lap = None
+        if _spi_timing_debug or _prepare_debug:
+            t0_prep = _time_start_ms()
+
         speed_str = "%03d" % min(999, max(0, int(round(float(speed_kmh or 0)))))
         bat_seg = round((bat_pct or 0) * BAT_SEGMENTS / 100) if bat_pct is not None else 0
         bat_seg = max(0, min(BAT_SEGMENTS, bat_seg))
 
+        ms_head = 0
+        if _prepare_debug and t0_prep is not None:
+            ms_head = _time_diff_ms(t0_prep)
+            t_lap = _time_start_ms()
+
+        ms_wake = 0
         if sm["display_mode"] == 3:
             if _boost_power_cut:
                 _power_restore_vpp_and_display_on()
             else:
                 _write_cmd(0xAF)
+        if _prepare_debug and t_lap is not None:
+            ms_wake = _time_diff_ms(t_lap)
+            t_lap = _time_start_ms()
 
+        ms_mode_sw = 0
+        ms_fill_uniform = 0
         if sm["display_mode"] != display_mode:
-            clear(ctx, 0x00)
+            # 勿在此调用 clear()：clear 会 _flush 整帧，随后本函数末尾再 _flush，切页会双倍 SPI。
+            if _prepare_debug and t_lap is not None:
+                t_fill0 = _time_start_ms()
+            _fb_fill_uniform(_gray_byte(0x00))
+            if _prepare_debug and t_lap is not None:
+                ms_fill_uniform = _time_diff_ms(t_fill0)
+            _state_boot = []
             sm["display_mode"] = display_mode
             sm["prev_line0"] = None
             sm["prev_line1"] = None
@@ -649,7 +882,10 @@ def update_display(
             sm["prev_sats"] = None
             sm["prev_bar_fill_w"] = None
             sm["prev_speed"] = None
-            _fb_fill_rect_pages(_fb, 0, CONTENT_COL_END, 0, PAGES - 1, 0x00)
+            sm["prev_bat"] = None
+        if _prepare_debug and t_lap is not None:
+            ms_mode_sw = _time_diff_ms(t_lap)
+            t_lap = _time_start_ms()
 
         if bat_pct is not None and bat_seg != sm["prev_bat"]:
             _draw_battery(bat_seg)
@@ -684,6 +920,10 @@ def update_display(
                     _fb_fill_rect_pages(_fb, spd_start, SPD_COL_RIGHT, PAGE_SPD_START, PAGE_SPD_END - 1, 0x00)
                     _draw_number_right(PAGE_SPD_START, SPD_COL_RIGHT, speed_str, font_large)
             sm["prev_speed"] = speed_str
+        ms_bat_spd = 0
+        if _prepare_debug and t_lap is not None:
+            ms_bat_spd = _time_diff_ms(t_lap)
+            t_lap = _time_start_ms()
 
         if display_mode == 0:
             line0 = "GNSS INFO"
@@ -724,6 +964,10 @@ def update_display(
                 _sats_val = 0
         else:
             _sats_val = 0
+        ms_fmt_lines = 0
+        if _prepare_debug and t_lap is not None:
+            ms_fmt_lines = _time_diff_ms(t_lap)
+            t_lap = _time_start_ms()
 
         if line0 != sm["prev_line0"]:
             _draw_content_line_incremental(PAGE_LINE0, sm["prev_line0"], line0, font_small)
@@ -761,8 +1005,31 @@ def update_display(
             sm["prev_sats"] = None
             sm["prev_bar_fill_w"] = None
 
+        ms_draw = 0
+        if _prepare_debug and t_lap is not None:
+            ms_draw = _time_diff_ms(t_lap)
+
         sm["oled_error_logged"] = False
-        _flush()
+        if _prepare_debug and t0_prep is not None:
+            tot = _time_diff_ms(t0_prep)
+            _log.info(
+                "OLED_prepare detail dm=%d head_ms=%d wake_ms=%d fill_u_ms=%d mode_sw_ms=%d bat_spd_ms=%d fmt_lines_ms=%d draw_ms=%d total_ms=%d"
+                % (
+                    display_mode,
+                    ms_head,
+                    ms_wake,
+                    ms_fill_uniform,
+                    ms_mode_sw,
+                    ms_bat_spd,
+                    ms_fmt_lines,
+                    ms_draw,
+                    tot,
+                )
+            )
+        if _spi_timing_debug or _prepare_debug:
+            if t0_prep is not None:
+                prep_ms = _time_diff_ms(t0_prep)
+        _flush(compose_prepare_ms=prep_ms)
     except Exception as e:
         if not _state_multi.get("oled_error_logged"):
             _log.warning("oled_ssd1327 update_display: %s" % e)
@@ -777,6 +1044,9 @@ def update_position(ctx, lat_disp, lon_disp, gnss_type, update_time, time_dif, s
     try:
         if not _alive(ctx):
             return
+        prep_ms = None
+        if _spi_timing_debug:
+            t_prep_ms = _time_start_ms()
         s = _state
         speed_str = "%03d" % min(999, max(0, int(round(float(speed_kmh or 0)))))
         bat_seg = round((bat_pct or 0) * BAT_SEGMENTS / 100) if bat_pct is not None else 0
@@ -824,7 +1094,9 @@ def update_position(ctx, lat_disp, lon_disp, gnss_type, update_time, time_dif, s
             s["prev_bat"] = bat_seg
 
         s["oled_error_logged"] = False
-        _flush()
+        if _spi_timing_debug:
+            prep_ms = _time_diff_ms(t_prep_ms)
+        _flush(compose_prepare_ms=prep_ms)
     except Exception as e:
         if not s.get("oled_error_logged"):
             _log.warning("oled_ssd1327 update_position: %s" % e)
@@ -863,6 +1135,9 @@ def update_display_compact(
     try:
         if not _alive(ctx):
             return
+        prep_ms = None
+        if _spi_timing_debug:
+            t_prep_ms = _time_start_ms()
         sc = _state_compact
         speed_str = "%03d" % min(999, max(0, int(round(float(speed_kmh or 0)))))
         bat_seg = round((bat_pct or 0) * BAT_SEGMENTS / 100) if bat_pct is not None else 0
@@ -925,7 +1200,9 @@ def update_display_compact(
             sc["prev_traccar_ago"] = line_trcr
 
         sc["oled_error_logged"] = False
-        _flush()
+        if _spi_timing_debug:
+            prep_ms = _time_diff_ms(t_prep_ms)
+        _flush(compose_prepare_ms=prep_ms)
     except Exception as e:
         if not sc.get("oled_error_logged"):
             _log.warning("oled_ssd1327 update_display_compact: %s" % e)

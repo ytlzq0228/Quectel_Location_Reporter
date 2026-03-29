@@ -100,6 +100,8 @@ def load_config():
         "aprs_interval": aprs_interval,
         "aprs_message": cfg.get("aprs_message", "").strip(),
         "aprs_icon": (cfg.get("aprs_icon", ">") or ">")[:1],
+        # 非 0：电源键动作后到 OLED 刷新返回的主循环分段耗时（GNSS_Reporter 日志 PKchain）
+        "powerkey_chain_debug": _int_val(cfg.get("powerkey_chain_debug"), 0),
     }
 
 

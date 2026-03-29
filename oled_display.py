@@ -54,6 +54,12 @@ def _ssd1327_cfg_from_raw(raw):
         "function_sel_a": _gi("oled_function_sel_a", 0x00),
         # SSD1327 外部 VPP 升压使能（高=开），逻辑供电独立；-1 表示不控制
         "boost_gpio": _gi("oled_boost_gpio", 20),
+        # 非 0：SSD1327 汇总日志；prepare 用 ms（避免 ticks_us 16 位回绕假值）
+        "spi_timing_debug": _gi("oled_spi_timing_debug", 0),
+        # 非 0：额外每条 spi.write 一行（会拖慢总时间，仅深度排障）
+        "spi_timing_verbose": _gi("oled_spi_timing_verbose", 0),
+        # 非 0：update_display 内 prepare 分段 ms（head/wake/mode_sw/bat_spd/fmt/draw）
+        "prepare_debug": _gi("oled_prepare_debug", 0),
     }
 
 

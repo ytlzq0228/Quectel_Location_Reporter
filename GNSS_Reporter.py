@@ -93,7 +93,7 @@ except Exception:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
-VERSION = "1.3.4"
+VERSION = "1.4.1"
 STATUS_LED_GPIO = 44  # EC800M/EG810M: GPIO44 -> 引脚25
 
 
@@ -489,6 +489,48 @@ SHORT_PRESS_MIN_MS = 50
 
 SETTINGS_OPTIONS = ("Screen off", "Power off", "FOTA")
 
+# powerkey_chain_debug=1 时：记录从电源键回调打点起，到本轮 OLED 刷新返回的各阶段耗时（ms，ticks_ms）
+_pk_chain_dbg = False
+_pk_chain_t0_ms = None
+_pk_chain_id = 0
+_pk_chain_reason = ""
+
+
+def _pk_chain_bool(v):
+    """配置里 1 / true / yes / on 均视为开启。"""
+    if v is None:
+        return False
+    try:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, int):
+            return v != 0
+    except Exception:
+        pass
+    s = str(v).strip().lower()
+    return s in ("1", "true", "yes", "on")
+
+
+def _pk_chain_arm(reason):
+    """在电源键回调里调用：仅记时刻，不打日志（避免在中断上下文打印）。"""
+    global _pk_chain_t0_ms, _pk_chain_id, _pk_chain_reason
+    if not _pk_chain_dbg:
+        return
+    _pk_chain_t0_ms = utime.ticks_ms()
+    _pk_chain_id += 1
+    _pk_chain_reason = reason
+
+
+def _pk_chain_tick(tag):
+    global _pk_chain_t0_ms
+    if _pk_chain_t0_ms is None or not _pk_chain_dbg:
+        return
+    dt = utime.ticks_diff(utime.ticks_ms(), _pk_chain_t0_ms)
+    _log.info(
+        "PKchain id=%d %-30s +%dms (since key, reason=%s)"
+        % (_pk_chain_id, tag, dt, _pk_chain_reason)
+    )
+
 
 def _is_screen_off():
     if config is not None and getattr(config, "get_screen_on_remote", None):
@@ -523,6 +565,7 @@ def _powerkey_callback(status):
             pass
         elif _is_screen_off():
             _set_screen_power_off(False)
+            _pk_chain_arm("wake_screen")
         elif _in_settings:
             if duration >= LONG_PRESS_MS:
                 if _settings_option == 0:
@@ -534,12 +577,15 @@ def _powerkey_callback(status):
                     _powerkey_fota_requested = True
             else:
                 _settings_option = (_settings_option + 1) % 3
+                _pk_chain_arm("settings_next")
         else:
             if duration >= LONG_PRESS_MS:
                 _in_settings = True
                 _settings_option = 0
+                _pk_chain_arm("enter_settings")
             else:
                 _display_mode = (_display_mode + 1) % 3
+                _pk_chain_arm("cycle_mode")
         _powerkey_press_ts = None
 
 # 需要重启时抛出此异常（MicroPython 中 SystemExit 可能被运行时直接处理，无法在入口处捕获）
@@ -550,12 +596,16 @@ class NeedRestart(Exception):
 def main():
     global _powerkey_exit_requested, _powerkey_fota_requested, _display_mode
     global _in_settings, _settings_option, _screen_off_local
+    global _pk_chain_dbg, _pk_chain_t0_ms, _pk_chain_id, _pk_chain_reason
     _powerkey_exit_requested = False
     _powerkey_fota_requested = False
     _display_mode = 0
     _in_settings = False
     _settings_option = 0
     _screen_off_local = False
+    _pk_chain_t0_ms = None
+    _pk_chain_id = 0
+    _pk_chain_reason = ""
     _log.info("GNSS_Reporter starting...")
     _log.info("Version: %s" % VERSION)
     status_led = StatusLed(STATUS_LED_GPIO)
@@ -576,6 +626,19 @@ def main():
     shutdown_requested = False  # NeedRestart/异常等场景：清理后关机
     try:
         cfg = load_config()
+        # load_config 与原始字符串双读：任一为真即开启（例如仍写 true/yes 而 int 解析为 0 时）
+        _pk_chain_dbg = _pk_chain_bool(cfg.get("powerkey_chain_debug", 0))
+        try:
+            if config is not None and getattr(config, "get_raw_value", None):
+                rv = config.get_raw_value("powerkey_chain_debug")
+                if rv is not None and str(rv).strip() != "":
+                    _pk_chain_dbg = _pk_chain_dbg or _pk_chain_bool(rv)
+        except Exception:
+            pass
+        _log.info(
+            "GNSS_Reporter: powerkey_chain_debug effective=%s (1=PKchain logs; set in /usr/config.cfg)"
+            % (1 if _pk_chain_dbg else 0)
+        )
         _log.debug("config: %s" % cfg)
 
         flash_pin = create_flash_pin(cfg["flash_gpio"])
@@ -731,8 +794,11 @@ def main():
                         oled_status("Flash mode exit")
                         break
 
+                    _pk_chain_tick("A_loop_iter_start")
+
                     # 1) 优先 GNSS；无 GNSS 时尽快 LBS 一次，之后按 lbs_interval 刷新，直到 GNSS 恢复
                     gnss_read_once()
+                    _pk_chain_tick("B_after_gnss_read_once")
                     lat = gps_data.get("lat")
                     lon = gps_data.get("lon")
                     lbs_interval = cfg.get("lbs_interval", 60)
@@ -751,6 +817,7 @@ def main():
                     # 有有效位置且 fix 非 0 则为 GNSS；否则已由 LBS 分支设为 LBS
                     if lat is not None and lon is not None and gps_data.get("fix") != "0":
                         gps_data["_source"] = "GNSS"
+                    _pk_chain_tick("B1_after_lbs_and_source")
                     # 显示：熄屏用 mode3，设置页用菜单单行，否则三款信息页轮播
                     if lat is not None and lon is not None:
                         lat_disp = "N%.5f" % lat if lat >= 0 else "S%.5f" % (-lat)
@@ -763,7 +830,11 @@ def main():
                     bat_pct = None
                     if battery:
                         try:
+                            _t_bat0 = utime.ticks_ms()
                             bat_pct, _ = battery.get_battery()
+                            _pk_chain_tick(
+                                "C_battery_get_ms=%d" % utime.ticks_diff(utime.ticks_ms(), _t_bat0)
+                            )
                         except Exception:
                             pass
                     try:
@@ -776,6 +847,7 @@ def main():
                         traccar_ago_sec = (now - last_still_report_ts) if last_still_report_ts else None
                     else:
                         traccar_ago_sec = (now - last_report_ts) if last_report_ts else None
+                    _pk_chain_tick("D_after_prep_before_oled")
                     if _is_screen_off():
                         oled_display.update_display(oled_i2c, 3, 0)
                     elif _in_settings:
@@ -803,6 +875,9 @@ def main():
                             heading=gps_data.get("track"),
                             sats=gps_data.get("sats"),
                         )
+                    _pk_chain_tick("F_after_oled_returns")
+                    if _pk_chain_t0_ms is not None:
+                        _pk_chain_t0_ms = None
                     if lat is None or lon is None:
                         utime.sleep(1)
                         continue

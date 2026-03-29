@@ -41,12 +41,14 @@ max_backoff=60
 wdt_period=60
 # 屏幕亮度 1–100，实际生效 1–100（百分比）；不存在或 0 时默认 100
 brightness=100
+# 非 0：电源键动作→主循环→OLED 刷新返回 分段耗时（日志前缀 PKchain）；须在设备 /usr/config.cfg 取消注释并设为 1
+#powerkey_chain_debug=0
 
 # OLED：ssd1306（默认 I2C 128x64）或 ssd1327（SPI 128x128）
 #oled_type=ssd1306
 #oled_spi_port=0
 #oled_spi_mode=0
-#oled_spi_clk=4
+#oled_spi_clk=4  #0:812.5kHz 1:1.625MHz 2:3.25MHz 3:6.5MHz 4:13MHz
 #oled_spi_group=1
 #oled_gpio_rst=5
 #oled_gpio_dc=7
@@ -55,6 +57,12 @@ brightness=100
 #oled_boost_gpio=20
 #oled_ssd1327_remap=0x51
 #oled_function_sel_a=0
+# 非 0：SSD1327 汇总一行：prepare_ms=构图/写显存（ticks_ms）；spi_wall/fb_*=送屏（ticks_us）
+#oled_spi_timing_debug=0
+# 非 0：每条 spi.write 打一行（UART 很慢，会把 total 撑到几十 ms，一般勿开）
+#oled_spi_timing_verbose=0
+# 非 0：SSD1327 update_display 内 prepare 分段（head_ms / fill_u_ms / wake / …），与 oled_spi_timing_debug 配合看构图 vs 送屏
+#oled_prepare_debug=0
 
 # LBS 基站定位参数（lbs_test.py 使用；仅部分模组支持 cellLocator）
 #申请移远LBS token https://portal.iotomp.com/locator_token.html
