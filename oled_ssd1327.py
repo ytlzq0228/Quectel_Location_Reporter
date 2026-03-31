@@ -11,7 +11,6 @@ from oled_common import (
     measure_number_cols as _measure_number_cols,
     first_last_diff as _first_last_diff,
     format_ago as _format_ago,
-    format_ago_sec_only as _format_ago_sec_only,
     format_lat_3d4_ns as _format_lat_3d4_ns,
     format_lon_3d4_ew as _format_lon_3d4_ew,
 )
@@ -388,6 +387,46 @@ def _blit_one_column(page, col, col_bytes):
     fb_blit_column_major(_fb, col, y_top, col_bytes, 1, len(col_bytes), 0x0F, 0x00)
 
 
+def _draw_hline(y, x0=0, x1=WIDTH - 1, gray4=0x05):
+    """在 _fb 上绘制一条 1px 水平线，用于标题栏/底栏分隔。"""
+    if _fb is None:
+        return
+    fb_fill_rect(_fb, x0, y, x1 - x0 + 1, 1, gray4)
+
+
+def _draw_char_fg(page, col, ch, font, fg=0x0F, bg=0x00):
+    """带自定义前景/背景灰度的单字符绘制。"""
+    ent = _get_col_major_buf(font, ch)
+    if ent is None:
+        try:
+            return font.max_width() + 1
+        except Exception:
+            return 1
+    buf, w, h_pages = ent
+    cols = w + 1
+    y_top = page * 8
+    fb_blit_column_major(_fb, col, y_top, buf, cols, h_pages, fg, bg)
+    return w + 1
+
+
+def _draw_string_fg(page, col, s, font, max_col=None, fg=0x0F, bg=0x00):
+    """带灰度的字符串绘制；标签用暗色（如 0x07），数值用亮色（0x0F）。"""
+    if max_col is None:
+        max_col = WIDTH
+    for c in s:
+        if col >= max_col:
+            break
+        adv = _draw_char_fg(page, col, c, font, fg, bg)
+        col += adv
+
+
+def _draw_static_frame():
+    """模式切换后绘制固定装饰元素：两条分隔线 + 底栏 km/h 单位标签。"""
+    _draw_hline(DIVIDER_Y1, 0, WIDTH - 1, 0x05)
+    _draw_hline(DIVIDER_Y2, 0, WIDTH - 1, 0x05)
+    _draw_string_fg(PAGE_BOTTOM_BAR, 2, "km/h", font_small, fg=0x07)
+
+
 BAT_COL_START = 116
 BAT_COL_END = 127
 BAT_PAGE_START = 0
@@ -426,19 +465,19 @@ def _draw_battery(seg_count):
         fb_blit_column_major(_fb, BAT_COL_START + c, y_base, col_buf, 1, np, 0x0F, 0x00)
 
 
-# 主界面 / update_position：标题 p0-1；p2 留白；经纬度 p3-4 / p6-7；类型行 p9-10；大号速度占 p3-6（与经纬区对齐）
+# 主界面 / update_position：标题 p0-1；分隔线 y=16(p2)；内容+速度 p3-12；分隔线 y=104(p13)；底栏 p14-15
 PAGE_TITLE = 0
 PAGE_LAT = 3
-PAGE_LON = 6
-PAGE_TYPE_UPD = 9
+PAGE_LON = 5          # 原 6，上移一页
+PAGE_TYPE_UPD = 7     # 原 9，移至速度区下方可全宽显示
 PAGE_SPD_START = 3
-PAGE_SPD_END = 7
+PAGE_SPD_END = 7      # 不含，速度占 p3-6 = 32px（不变）
 
 COL_TITLE = 2
 COL_LAT = 1
 COL_LON = 1
 COL_TYPE_UPD = 1
-COL_LEFT_MAX = 54
+COL_LEFT_MAX = 62     # 原 54，速度在右侧约 col 63-127
 
 LAT_MAX_CH = 11
 LON_MAX_CH = 11
@@ -448,31 +487,45 @@ TYPE_UPD_MAX_CH = 18
 
 SPD_COL_RIGHT = WIDTH - 1
 
+# 分隔线与底栏
+DIVIDER_Y1 = 16       # 标题栏下方 1px 分隔线（p2 顶部像素）
+DIVIDER_Y2 = 104      # 底栏上方 1px 分隔线（p13 顶部像素）
+PAGE_BOTTOM_BAR = 14  # 底栏页（p14-15，y=112-127）：km/h 标签 + 速度进度条
+SPD_BAR_COL_START = 28   # 进度条起始列（"km/h" 标签右侧）
+SPD_BAR_COL_END = WIDTH - 1  # 进度条结束列
+SPD_BAR_MAX_KMH = 150    # 进度条满格对应速度（km/h）
+
 PAGE_C_TITLE = 0
 PAGE_C_SPD_START = 3
 PAGE_C_SPD_END = 7
 PAGE_C_TYPE = 3
-PAGE_C_APRS = 6
-PAGE_C_TRACCAR = 9
+PAGE_C_APRS = 5       # 原 6，上移
+PAGE_C_TRACCAR = 7    # 原 9，移至速度区下方
+PAGE_C_ACCU = 9       # 新增精度行
 COL_C_TITLE = 2
 COL_C_LEFT = 1
-COL_C_LEFT_MAX = 54
+COL_C_LEFT_MAX = 62   # 原 54
 C_TITLE_LEN = 10
 C_TYPE_LEN = 11
 C_LINE_LEN = 18
 
 SPD_COL_RIGHT_C = WIDTH - 1
 
-BOOT_MAX_LINES = min(6, PAGES // SMALL_H_PAGES) if PAGES >= SMALL_H_PAGES else 1
-BOOT_CHARS_PER_LINE = 21
+BOOT_TITLE_PAGES = 2      # 标题栏占 p0-1（y=0-15）
+BOOT_MSG_START_PAGE = 2   # 消息区从 p2（y=16）开始，紧接标题栏
+BOOT_MAX_LINES = min(7, (PAGES - BOOT_TITLE_PAGES) // SMALL_H_PAGES) if PAGES > BOOT_TITLE_PAGES else 1
+BOOT_CHARS_PER_LINE = 20
 _state_boot = []
 
 PAGE_LINE0 = 0
 PAGE_LINE1 = 3
-PAGE_LINE2 = 6
-PAGE_LINE3 = 9
-CONTENT_COL_END = COL_LEFT_MAX
-CONTENT_MAX_CH = 18
+PAGE_LINE2 = 5        # 原 6，上移
+PAGE_LINE3 = 7        # 原 9，速度区下方（可全宽）
+PAGE_LINE4 = 9        # 新增
+PAGE_LINE5 = 11       # 新增
+CONTENT_COL_END = COL_LEFT_MAX       # 速度区左侧内容边界（p3-6）
+CONTENT_COL_END_FULL = WIDTH - 1     # 速度区下方全宽内容边界（p7+）
+CONTENT_MAX_CH = 20
 
 _state_multi = {
     "display_mode": -1,
@@ -482,8 +535,11 @@ _state_multi = {
     "prev_line1": None,
     "prev_line2": None,
     "prev_line3": None,
+    "prev_line4": None,
+    "prev_line5": None,
     "prev_sats": None,
     "prev_bar_fill_w": None,
+    "prev_spd_bar_fill_w": None,
     "oled_error_logged": False,
 }
 
@@ -568,6 +624,7 @@ _state = {
     "prev_speed": None,
     "prev_type_upd": None,
     "prev_bat": None,
+    "prev_spd_bar_fill_w": None,
     "oled_error_logged": False,
 }
 
@@ -580,6 +637,7 @@ _state_compact = {
     "prev_aprs_ago": None,
     "prev_traccar_ago": None,
     "prev_accuracy": None,
+    "prev_spd_bar_fill_w": None,
     "oled_error_logged": False,
 }
 
@@ -756,6 +814,13 @@ def clear(ctx, fill=0x00):
         _log.error("oled_ssd1327 clear error: %s" % e)
 
 
+def _draw_boot_header():
+    """绘制 boot 页面标题栏：深灰底色 + 'BOOT' 标题 + 底部分隔线。"""
+    fb_fill_rect(_fb, 0, 0, WIDTH, BOOT_TITLE_PAGES * 8, 0x02)
+    _draw_string_fg(0, 3, "BOOT", font_small, fg=0x0F, bg=0x02)
+    _draw_hline(BOOT_TITLE_PAGES * 8 - 1, 0, WIDTH - 1, 0x06)
+
+
 def show_boot_message(ctx, msg="Booting..."):
     global _state_boot
     if not _alive(ctx):
@@ -766,21 +831,24 @@ def show_boot_message(ctx, msg="Booting..."):
             t_prep_ms = _time_start_ms()
         line = str(msg)[:BOOT_CHARS_PER_LINE]
         n = len(_state_boot)
+        msg_area_end = BOOT_MSG_START_PAGE + BOOT_MAX_LINES * SMALL_H_PAGES - 1
         if n < BOOT_MAX_LINES:
             if n == 0:
-                _fb_fill_rect_pages(_fb, 0, WIDTH - 1, 0, BOOT_MAX_LINES * SMALL_H_PAGES - 1, 0x00)
+                # 首条消息：绘制标题栏并清空整个消息区
+                _draw_boot_header()
+                _fb_fill_rect_pages(_fb, 0, WIDTH - 1, BOOT_MSG_START_PAGE, msg_area_end, 0x00)
             _state_boot.append(line)
             row = len(_state_boot) - 1
-            page_start = row * SMALL_H_PAGES
+            page_start = BOOT_MSG_START_PAGE + row * SMALL_H_PAGES
             if n > 0:
                 _fb_fill_rect_pages(_fb, 0, WIDTH - 1, page_start, page_start + SMALL_H_PAGES - 1, 0x00)
-            _draw_string(page_start, 0, line, font_small)
+            _draw_string(page_start, 2, line, font_small)
         else:
             _state_boot = _state_boot[1:] + [line]
             for row in range(BOOT_MAX_LINES):
-                page_start = row * SMALL_H_PAGES
+                page_start = BOOT_MSG_START_PAGE + row * SMALL_H_PAGES
                 _fb_fill_rect_pages(_fb, 0, WIDTH - 1, page_start, page_start + SMALL_H_PAGES - 1, 0x00)
-                _draw_string(page_start, 0, _state_boot[row], font_small)
+                _draw_string(page_start, 2, _state_boot[row], font_small)
         if _spi_timing_debug:
             prep_ms = _time_diff_ms(t_prep_ms)
         _flush(compose_prepare_ms=prep_ms)
@@ -873,14 +941,18 @@ def update_display(
             _fb_fill_uniform(_gray_byte(0x00))
             if _prepare_debug and t_lap is not None:
                 ms_fill_uniform = _time_diff_ms(t_fill0)
+            _draw_static_frame()
             _state_boot = []
             sm["display_mode"] = display_mode
             sm["prev_line0"] = None
             sm["prev_line1"] = None
             sm["prev_line2"] = None
             sm["prev_line3"] = None
+            sm["prev_line4"] = None
+            sm["prev_line5"] = None
             sm["prev_sats"] = None
             sm["prev_bar_fill_w"] = None
+            sm["prev_spd_bar_fill_w"] = None
             sm["prev_speed"] = None
             sm["prev_bat"] = None
         if _prepare_debug and t_lap is not None:
@@ -920,6 +992,15 @@ def update_display(
                     _fb_fill_rect_pages(_fb, spd_start, SPD_COL_RIGHT, PAGE_SPD_START, PAGE_SPD_END - 1, 0x00)
                     _draw_number_right(PAGE_SPD_START, SPD_COL_RIGHT, speed_str, font_large)
             sm["prev_speed"] = speed_str
+        # 底栏速度进度条：仅速度变化或首次绘制时更新，增量刷新开销极小
+        if speed_str != sm.get("_last_bar_speed") or sm["prev_spd_bar_fill_w"] is None:
+            spd_bar_pct = min(100, int(round(float(speed_kmh or 0))) * 100 // SPD_BAR_MAX_KMH)
+            fill_w = _draw_progress_bar(
+                PAGE_BOTTOM_BAR, SPD_BAR_COL_START, SPD_BAR_COL_END,
+                spd_bar_pct, prev_fill_w=sm["prev_spd_bar_fill_w"]
+            )
+            sm["prev_spd_bar_fill_w"] = fill_w
+            sm["_last_bar_speed"] = speed_str
         ms_bat_spd = 0
         if _prepare_debug and t_lap is not None:
             ms_bat_spd = _time_diff_ms(t_lap)
@@ -930,24 +1011,41 @@ def update_display(
             line1 = _format_lat_3d4_ns(lat_disp)
             line2 = _format_lon_3d4_ew(lon_disp)
             line3 = "Type:" + (gnss_type or "---")
+            if accuracy_m is not None:
+                try:
+                    line4 = "Acc:%dm" % min(9999, max(0, int(round(float(accuracy_m)))))
+                except (TypeError, ValueError):
+                    line4 = "Acc: --"
+            else:
+                line4 = "Acc: --"
+            if heading is not None:
+                try:
+                    line5 = "HDG:%d" % (int(round(float(heading))) % 360)
+                except (TypeError, ValueError):
+                    line5 = "HDG: --"
+            else:
+                line5 = "HDG: --"
         elif display_mode == 1:
-            line0 = "Report Status"
-            line1 = "AU:" + _format_ago_sec_only(aprs_ago_sec)
-            line2 = "TU:" + _format_ago_sec_only(traccar_ago_sec)
+            line0 = "Report"
+            line1 = "AU:" + _format_ago(aprs_ago_sec)
+            line2 = "TU:" + _format_ago(traccar_ago_sec)
             try:
                 loc = utime.localtime()
-                line3 = "%04d-%02d-%02d %02d:%02d:%02d" % (loc[0], loc[1], loc[2], loc[3], loc[4], loc[5])
+                line3 = "%04d-%02d-%02d" % (loc[0], loc[1], loc[2])
+                line4 = "%02d:%02d:%02d" % (loc[3], loc[4], loc[5])
             except Exception:
                 line3 = (system_time_str or "--:--:--")
+                line4 = ""
+            line5 = ""
         else:
             line0 = "Acc/HDG/SAT"
             if accuracy_m is not None:
                 try:
-                    line1 = "ACC:" + "%3d" % min(999, max(0, int(round(float(accuracy_m)))))
+                    line1 = "Acc:" + "%3d" % min(999, max(0, int(round(float(accuracy_m)))))
                 except (TypeError, ValueError):
-                    line1 = "ACC: --"
+                    line1 = "Acc: --"
             else:
-                line1 = "ACC: --"
+                line1 = "Acc: --"
             if heading is not None:
                 try:
                     line2 = "HDG:" + "%3d" % min(999, max(0, int(round(float(heading)))))
@@ -956,6 +1054,8 @@ def update_display(
             else:
                 line2 = "HDG: --"
             line3 = None
+            line4 = ""
+            line5 = ""
 
         if display_mode == 2:
             try:
@@ -1000,10 +1100,27 @@ def update_display(
             sm["prev_bar_fill_w"] = fill_w
         else:
             if line3 != sm["prev_line3"]:
-                _draw_content_line_incremental(PAGE_LINE3, sm["prev_line3"], line3, font_small)
+                _draw_content_line_incremental(
+                    PAGE_LINE3, sm["prev_line3"], line3, font_small,
+                    content_col_end=CONTENT_COL_END_FULL
+                )
                 sm["prev_line3"] = line3
             sm["prev_sats"] = None
             sm["prev_bar_fill_w"] = None
+
+        if line4 != sm["prev_line4"]:
+            _draw_content_line_incremental(
+                PAGE_LINE4, sm["prev_line4"], line4, font_small,
+                content_col_end=CONTENT_COL_END_FULL
+            )
+            sm["prev_line4"] = line4
+
+        if line5 != sm["prev_line5"]:
+            _draw_content_line_incremental(
+                PAGE_LINE5, sm["prev_line5"], line5, font_small,
+                content_col_end=CONTENT_COL_END_FULL
+            )
+            sm["prev_line5"] = line5
 
         ms_draw = 0
         if _prepare_debug and t_lap is not None:
@@ -1054,6 +1171,7 @@ def update_position(ctx, lat_disp, lon_disp, gnss_type, update_time, time_dif, s
 
         if not s["init_done"]:
             _draw_static_labels()
+            _draw_static_frame()
             s["init_done"] = True
             s["prev_lat"] = ""
             s["prev_lon"] = ""
@@ -1083,9 +1201,17 @@ def update_position(ctx, lat_disp, lon_disp, gnss_type, update_time, time_dif, s
             _fb_fill_rect_pages(_fb, spd_start, SPD_COL_RIGHT, PAGE_SPD_START, PAGE_SPD_END - 1, 0x00)
             _draw_number_right(PAGE_SPD_START, SPD_COL_RIGHT, speed_str, font_large)
             s["prev_speed"] = speed_str
+        if speed_str != s.get("_last_bar_speed") or s["prev_spd_bar_fill_w"] is None:
+            spd_bar_pct = min(100, int(round(float(speed_kmh or 0))) * 100 // SPD_BAR_MAX_KMH)
+            fill_w = _draw_progress_bar(
+                PAGE_BOTTOM_BAR, SPD_BAR_COL_START, SPD_BAR_COL_END,
+                spd_bar_pct, prev_fill_w=s["prev_spd_bar_fill_w"]
+            )
+            s["prev_spd_bar_fill_w"] = fill_w
+            s["_last_bar_speed"] = speed_str
 
         if type_upd_line != (s.get("prev_type_upd") or ""):
-            _fb_fill_rect_pages(_fb, COL_TYPE_UPD, COL_LEFT_MAX, PAGE_TYPE_UPD, PAGE_TYPE_UPD + SMALL_H_PAGES - 1, 0x00)
+            _fb_fill_rect_pages(_fb, COL_TYPE_UPD, CONTENT_COL_END_FULL, PAGE_TYPE_UPD, PAGE_TYPE_UPD + SMALL_H_PAGES - 1, 0x00)
             _draw_string(PAGE_TYPE_UPD, COL_TYPE_UPD, type_upd_line, font_small)
             s["prev_type_upd"] = type_upd_line
 
@@ -1114,6 +1240,7 @@ def reset_display_compact():
         sc["prev_aprs_ago"] = None
         sc["prev_traccar_ago"] = None
         sc["prev_accuracy"] = None
+        sc["prev_spd_bar_fill_w"] = None
     except Exception as e:
         _log.error("oled_ssd1327 reset_display_compact error: %s" % e)
 
@@ -1152,11 +1279,13 @@ def update_display_compact(
                 acc_str = "--"
         else:
             acc_str = "--"
-        line_aprs = ("APRS:%s Acc:%s" % (aprs_str, acc_str))[:C_LINE_LEN]
-        line_trcr = ("Trcr:%s" % traccar_str)[:C_LINE_LEN]
+        line_aprs = ("AU:" + aprs_str)[:C_LINE_LEN]
+        line_trcr = ("TU:" + traccar_str)[:C_LINE_LEN]
+        line_accu = ("Acc:" + acc_str)[:C_LINE_LEN]
 
         if not sc["init_done"]:
             _draw_compact_static(title)
+            _draw_static_frame()
             sc["init_done"] = True
             sc["prev_title"] = ""
             sc["prev_bat"] = -1
@@ -1182,6 +1311,14 @@ def update_display_compact(
             _fb_fill_rect_pages(_fb, spd_start, SPD_COL_RIGHT_C, PAGE_C_SPD_START, PAGE_C_SPD_END - 1, 0x00)
             _draw_number_right(PAGE_C_SPD_START, SPD_COL_RIGHT_C, speed_str, font_large)
             sc["prev_speed"] = speed_str
+        if speed_str != sc.get("_last_bar_speed") or sc["prev_spd_bar_fill_w"] is None:
+            spd_bar_pct = min(100, int(round(float(speed_kmh or 0))) * 100 // SPD_BAR_MAX_KMH)
+            fill_w = _draw_progress_bar(
+                PAGE_BOTTOM_BAR, SPD_BAR_COL_START, SPD_BAR_COL_END,
+                spd_bar_pct, prev_fill_w=sc["prev_spd_bar_fill_w"]
+            )
+            sc["prev_spd_bar_fill_w"] = fill_w
+            sc["_last_bar_speed"] = speed_str
 
         type_disp = ("Type:" + type_str)[:C_TYPE_LEN]
         if type_disp != sc["prev_type"]:
@@ -1195,9 +1332,14 @@ def update_display_compact(
             sc["prev_aprs_ago"] = line_aprs
 
         if line_trcr != sc["prev_traccar_ago"]:
-            _fb_fill_rect_pages(_fb, COL_C_LEFT, COL_C_LEFT_MAX, PAGE_C_TRACCAR, PAGE_C_TRACCAR + SMALL_H_PAGES - 1, 0x00)
+            _fb_fill_rect_pages(_fb, COL_C_LEFT, CONTENT_COL_END_FULL, PAGE_C_TRACCAR, PAGE_C_TRACCAR + SMALL_H_PAGES - 1, 0x00)
             _draw_string(PAGE_C_TRACCAR, COL_C_LEFT, line_trcr, font_small)
             sc["prev_traccar_ago"] = line_trcr
+
+        if line_accu != sc["prev_accuracy"]:
+            _fb_fill_rect_pages(_fb, COL_C_LEFT, CONTENT_COL_END_FULL, PAGE_C_ACCU, PAGE_C_ACCU + SMALL_H_PAGES - 1, 0x00)
+            _draw_string(PAGE_C_ACCU, COL_C_LEFT, line_accu, font_small)
+            sc["prev_accuracy"] = line_accu
 
         sc["oled_error_logged"] = False
         if _spi_timing_debug:
