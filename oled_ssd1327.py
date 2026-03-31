@@ -491,7 +491,7 @@ SPD_COL_RIGHT = WIDTH - 1
 DIVIDER_Y1 = 16       # 标题栏下方 1px 分隔线（p2 顶部像素）
 DIVIDER_Y2 = 104      # 底栏上方 1px 分隔线（p13 顶部像素）
 PAGE_BOTTOM_BAR = 14  # 底栏页（p14-15，y=112-127）：km/h 标签 + 速度进度条
-SPD_BAR_COL_START = 28   # 进度条起始列（"km/h" 标签右侧）
+SPD_BAR_COL_START = 2 + _measure_number_cols("km/h", font_small) + 3  # "km/h" 标签右侧留 3px 间距
 SPD_BAR_COL_END = WIDTH - 1  # 进度条结束列
 SPD_BAR_MAX_KMH = 150    # 进度条满格对应速度（km/h）
 
