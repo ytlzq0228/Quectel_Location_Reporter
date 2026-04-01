@@ -93,7 +93,7 @@ except Exception:
 CID = 1
 PROFILE = 0
 FLASH_CHECK_INTERVAL_TICKS = 30
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 STATUS_LED_GPIO = 44  # EC800M/EG810M: GPIO44 -> 引脚25
 
 
@@ -475,7 +475,7 @@ def build_traccar_payload(device_id, lat, lon, gps_data):
     return payload
 
 
-# PowerKey：仅短按/长按，长按阈值 1500ms；短按轮播信息页或设置项，长按进设置或确定
+# PowerKey：仅短按/长按，长按阈值 800ms；短按轮播信息页或设置项，长按进设置或确定
 _powerkey_exit_requested = False
 _powerkey_fota_requested = False
 _powerkey_press_ts = None
@@ -484,7 +484,7 @@ _in_settings = False   # 是否在设置页
 _settings_option = 0   # 设置项 0=熄屏 1=关机 2=FOTA
 # config 不可用时用本地标志；正常时用 config.get/set_screen_on_remote（与远程指令一致）
 _screen_off_local = False
-LONG_PRESS_MS = 1500
+LONG_PRESS_MS = 800
 SHORT_PRESS_MIN_MS = 50
 
 SETTINGS_OPTIONS = ("Screen off", "Power off", "FOTA")
@@ -745,7 +745,7 @@ def main():
         try:
             pk = PowerKey()
             if pk.powerKeyEventRegister(_powerkey_callback) == 0:
-                _log.info("PowerKey: short=cycle, long=settings/confirm, 1500ms.")
+                _log.info("PowerKey: short=cycle, long=settings/confirm, 800ms.")
                 oled_status("PowerKey Register ok")
             else:
                 _log.warning("PowerKey register failed.")
