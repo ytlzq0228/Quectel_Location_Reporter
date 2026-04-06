@@ -594,6 +594,52 @@ class NeedRestart(Exception):
 
 # ------------------------- 主流程 -------------------------
 def main():
+    """
+    主流程入口，整体分为「初始化阶段」与「主循环阶段」。
+
+    ── 初始化阶段（顺序执行，任一关键步骤失败则抛 NeedRestart 或直接退出）──
+      1. 状态 LED / OLED 初始化，显示 Booting 与版本号。
+      2. 读取配置文件（config.cfg），包括上报间隔、刷机引脚、看门狗等参数。
+      3. 检测刷机引脚（flash_gpio）：引脚拉低（接 GND）则立即退出，进入刷机模式。
+      4. 获取设备 ID（IMEI），作为 Traccar/APRS 的唯一标识。
+      5. 等待网络就绪（checkNet.waitNetworkReady），超时则 NeedRestart → 关机。
+      6. NTP 对时，同步系统时钟。
+      7. 数据拨号（dataCall.getInfo），确保 PDP 通路已激活。
+      8. GNSS 初始化：配置星系/输出语句/AGPS/备电，调用 quecgnss.init() → 失败则 NeedRestart → 关机。
+      9. 启动 Traccar 异步消费者线程与 rssi/cell 缓存刷新线程（traccar_report）。
+     10. 启动 APRS 异步消费者线程（aprs_report，aprs_callsign 留空则跳过）。
+     11. 启动看门狗（WDT），wdt_period=0 则不启用。
+     12. 注册电源键回调（PowerKey），支持短按轮播信息页、长按进设置。
+
+    ── 主循环阶段（while True，每轮约 1 秒）──
+      每轮依次执行：
+      A. 喂看门狗（wdt.feed()）。
+      B. 检查电源键事件：
+           - FOTA 请求（_powerkey_fota_requested）→ 执行 FOTA 后退出循环。
+           - 关机请求（_powerkey_exit_requested）→ 设 shutdown_requested 后退出循环。
+      C. 定期检测刷机引脚（每 FLASH_CHECK_INTERVAL_TICKS 轮一次）。
+      D. 获取位置：
+           - 优先调用 gnss_read_once() 解析 NMEA（GGA/RMC），更新全局 gps_data。
+           - 若 GNSS 无定位（lat/lon 为 None 或 fix==0）且配置了 LBS token，
+             则按 lbs_interval 间隔调用 get_lbs_location() 获取基站定位，
+             成功后写入 gps_data（speed 置 0，_source 标记为 "LBS"）。
+      E. 更新 OLED 显示（熄屏/设置菜单/三款信息页之一）。
+      F. 若无有效位置（lat/lon 均为 None），sleep 1s 后 continue。
+      G. APRS 打点：有位置且距上次 APRS 入队时间 ≥ aprs_interval 时，
+         调用 aprs_report.enqueue(gps_data)，入队即返回（不阻塞网络）。
+      H. Traccar 打点（运动/静止双间隔策略）：
+           - 距上次打点未满 moving_interval 秒 → sleep 1s 后 continue（限制最高频率）。
+           - 速度 ≤ still_speed_threshold 且距上次静止上报未满 still_interval 秒，
+             且未触发距离阈值（distance_threshold）强制上报 → sleep 1s 后 continue。
+           - 否则（运动 or 静止间隔已到 or 距离触发）：
+             build_traccar_payload() 构造载荷并调用 traccar_report.enqueue(payload)。
+             载荷中 rssi/cell/battery 均从全局缓存读取，不在此阻塞。
+
+    ── 退出与清理 ──
+      - 循环正常退出或 NeedRestart / 未捕获异常均进入 finally：
+        关灯、OLED 清屏、停看门狗、关 GNSS。
+      - shutdown_requested 或 _powerkey_exit_requested 为真时调用 Power.powerDown() 关机。
+    """
     global _powerkey_exit_requested, _powerkey_fota_requested, _display_mode
     global _in_settings, _settings_option, _screen_off_local
     global _pk_chain_dbg, _pk_chain_t0_ms, _pk_chain_id, _pk_chain_reason
