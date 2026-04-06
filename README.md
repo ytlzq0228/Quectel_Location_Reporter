@@ -47,6 +47,7 @@
 - [四、修改上电方式（可选）](#四修改上电方式可选)
 - [项目结构](#项目结构)
 - [功能概览](#功能概览)
+- [主流程说明](#主流程说明)
 - [架构与实现要点](#架构与实现要点)
 - [配置说明（config.cfg）](#配置说明configcfg)
 - [依赖与参考](#依赖与参考)
@@ -166,6 +167,75 @@ OLED 当前使用 **font_to_py** 生成的 12px/32px 字库（见 `Fonts/`）。
 | **弱网与缓存** | 发送失败时写入 `cache_file`，网络恢复后先发缓存再发新点，带退避重试 |
 | **刷机控制引脚** | 检测 `flash_gpio`：未悬空（如接 GND）则程序退出，便于进入刷机模式 |
 | **看门狗** | `wdt_period` > 0 时启用，超时未喂狗则重启 |
+
+---
+
+## 主流程说明
+
+以下说明 `main()`（位于 `GNSS_Reporter.py`）的完整执行流程。
+
+```
+main() 启动
+  │
+  ├─ 初始化阶段
+  │    ├─ 1. 状态 LED 慢闪（BOOT 模式）；OLED 显示 "Booting..." 与版本号
+  │    ├─ 2. 读取配置文件 config.cfg（上报间隔、引脚、看门狗等参数）
+  │    ├─ 3. 检测刷机引脚（flash_gpio）
+  │    │      └─ 引脚拉低（接 GND）→ 立即退出，进入刷机模式
+  │    ├─ 4. 获取设备 ID（IMEI），用于 Traccar/APRS 设备标识
+  │    ├─ 5. 等待网络就绪（checkNet.waitNetworkReady）
+  │    │      └─ 超时 → NeedRestart → 关机
+  │    ├─ 6. NTP 对时，同步系统时钟
+  │    ├─ 7. 数据拨号（dataCall.getInfo），确保 PDP 通路已激活
+  │    ├─ 8. GNSS 初始化：配置星系/输出/AGPS/备电，调用 quecgnss.init()
+  │    │      └─ 失败 → NeedRestart → 关机
+  │    ├─ 9. 启动 Traccar 异步消费者线程 + rssi/cell 缓存刷新线程
+  │    │      （traccar_host 留空则跳过）
+  │    ├─ 10. 启动 APRS 异步消费者线程
+  │    │       （aprs_callsign 留空则跳过）
+  │    ├─ 11. 启动看门狗（WDT），wdt_period=0 则不启用
+  │    └─ 12. 注册电源键回调（短按轮播信息页，长按进设置）
+  │
+  └─ 主循环阶段（while True，每轮约 1 秒）
+       │
+       ├─ A. 喂看门狗（wdt.feed()）；LED 心跳 tick
+       │
+       ├─ B. 检查电源键事件
+       │      ├─ FOTA 请求  → 执行 FOTA（fota_update.run_fota_with_progress）→ break
+       │      └─ 关机请求  → shutdown_requested=True → break
+       │
+       ├─ C. 每 FLASH_CHECK_INTERVAL_TICKS 轮检测一次刷机引脚
+       │      └─ 引脚拉低 → break（退出后不关机，便于进刷机工具）
+       │
+       ├─ D. 获取位置
+       │      ├─ gnss_read_once() 解析 NMEA（GGA→fix/sats/hdop/alt，RMC→lat/lon/speed/course）
+       │      └─ 若 GNSS 无定位（lat/lon=None 或 fix=0）且配置了 LBS token
+       │             └─ 距上次 LBS ≥ lbs_interval → get_lbs_location()
+       │                  ├─ 成功 → gps_data 写入 LBS 坐标，speed=0，_source="LBS"
+       │                  └─ 失败 → gps_data 保持不变
+       │
+       ├─ E. 更新 OLED 显示
+       │      ├─ 熄屏状态（_is_screen_off）    → 全黑（mode 3）
+       │      ├─ 设置菜单（_in_settings）       → 显示 3 行选项（> 高亮当前项）
+       │      └─ 正常状态                        → 按 _display_mode（0/1/2）轮播信息页
+       │
+       ├─ F. 若无有效位置（lat/lon 均为 None）→ sleep 1s → continue
+       │
+       ├─ G. APRS 打点
+       │      └─ 距上次 APRS 入队 ≥ aprs_interval → aprs_report.enqueue(gps_data)（非阻塞入队）
+       │
+       └─ H. Traccar 打点（运动/静止双间隔策略）
+              ├─ 距上次打点 < moving_interval → sleep 1s → continue（限制最高频率）
+              ├─ 速度 ≤ still_speed_threshold 且距上次静止上报 < still_interval
+              │    且未触发距离阈值（distance_threshold）强制上报
+              │    → sleep 1s → continue
+              └─ 否则（运动 or 静止间隔到 or 距离触发）
+                   └─ build_traccar_payload() 构造载荷（rssi/cell/battery 读全局缓存，不阻塞）
+                        → traccar_report.enqueue(payload)（非阻塞入队）
+```
+
+**退出与清理**（break 或异常均进入 finally）：  
+关状态 LED → OLED 清屏 → 停看门狗 → 关 GNSS → 若 `shutdown_requested` 则 `Power.powerDown()` 关机。
 
 ---
 
